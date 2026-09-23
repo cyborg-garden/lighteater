@@ -243,8 +243,83 @@ def test_burst_and_wave_commands_land_on_next_step(tmp_path):
     m.stop()
 
 
+def test_depth_key_h_is_free_everywhere_and_not_a_scene_change(tmp_path):
+    """h ('height') is claimed only by physarum.depth. Building the real
+    command registry for this mode raises on any collision (shell globals,
+    mode-switch letters, the mode's own commands); the menu's card keys are a
+    separate router and are checked directly. It is a toggle, not a scene
+    change, so it must not release autopilot."""
+    from dtouch.menu import registry_cards
+    from dtouch.shell import AUTO_RELEASE_KEYS
+    host = _booted(tmp_path)
+    host._wire_keys()                       # raises if any key is bound twice
+    cmd = host.reg._by_key.get(ord("h"))
+    assert cmd is not None and cmd.name == "physarum.depth"
+    assert host.reg._by_key.get(ord("H")) is cmd
+    assert "h" not in {c.key for c in registry_cards() if c.key}
+    assert ord("h") not in AUTO_RELEASE_KEYS and ord("H") not in AUTO_RELEASE_KEYS
+
+
+def test_depth_key_toggles_flat_and_back_to_the_last_depth(tmp_path):
+    host = _booted(tmp_path)
+    ui, m = host.ui, host.mode
+    run = m.commands()["physarum.depth"].run
+    ui.ph_depth = 0.9
+    run()
+    assert ui.ph_depth == 0.0
+    assert host.hud.toasts._center.text == "FLAT"
+    run()
+    assert ui.ph_depth == 0.9
+    assert host.hud.toasts._center.text == "DEPTH 0.9"
+
+
+def test_depth_slider_defaults_and_panic(tmp_path):
+    """Depth sits in LOOK after Grain, saves as `depth`, and every built-in
+    look plus DEFAULTS (what panic and custom looks fall back to) carries
+    one, so recalling a look or panicking sets it."""
+    from dtouch.modes.physarum import DEPTH_DEFAULT, LOOK_DEPTH
+    from dtouch.panelspec import apply_look
+    look = [s for s in PhysarumMode().panel_spec() if s.title == "LOOK"][0]
+    labels = [getattr(w, "label", None) for w in look.widgets]
+    assert labels[labels.index("Grain") + 1] == "Depth"
+    depth_w = look.widgets[labels.index("Depth")]
+    assert depth_w.store_key == "depth" and (depth_w.lo, depth_w.hi) == (0.0, 1.0)
+    assert PhysarumMode.DEFAULTS["depth"] == DEPTH_DEFAULT == 0.6
+    assert PhysarumMode._UI_DEFAULTS["ph_depth"] == DEPTH_DEFAULT
+    for name, cfg in PhysarumMode.BUILTIN.items():
+        assert cfg["depth"] == LOOK_DEPTH[name]
+    host = _booted(tmp_path)
+    host.ui.ph_depth = 0.1
+    apply_look(host.ui, host.ui.spec, {}, defaults=PhysarumMode.DEFAULTS)
+    assert host.ui.ph_depth == DEPTH_DEFAULT
+
+
+def test_random_cast_never_lands_flat(tmp_path):
+    host = _booted(tmp_path)
+    m = host.mode
+    for _ in range(12):
+        m.cast_random()
+        assert 0.4 <= host.ui.ph_depth <= 1.0
+
+
+def test_depth_reaches_the_cpu_engine_and_changes_the_picture(tmp_path):
+    """The CPU fallback honours Depth too: the same grown field renders
+    differently at depth 0 and at the default depth."""
+    f = _field()
+    for _ in range(40):
+        f.update(np.zeros((f.gh, f.gw), np.float32),
+                 np.full((f.gh, f.gw), 0.6, np.float32))
+    trail, norm = f.trail.copy(), f._norm
+    flat = f.luminance()
+    f.trail, f._norm, f.depth = trail, norm, 0.6
+    lit = f.luminance()
+    vein = flat > 0.3
+    assert vein.any()
+    assert float(np.abs(lit - flat)[vein].mean()) >= 0.02
+
+
 def test_mode_keys_do_not_collide_with_new_commands():
-    host_keys = {"x", "b", "w"}
+    host_keys = {"x", "b", "w", "h"}
     mode_switch = {getattr(m, "key", m.id[:1]) for m in REGISTRY}
     assert not host_keys & mode_switch
     assert not host_keys & set("sgariqm")

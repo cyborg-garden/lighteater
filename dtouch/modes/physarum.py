@@ -22,6 +22,11 @@ at the gesture. Z casts a random regime (points + look params from the
 validated bands) with a forced hop and melt surge — the slot machine that
 always pays.
 
+**Depth** (LOOK section; H toggles it flat and back) lights the picture as a
+relief of the trail under a key light that orbits slowly and drops on the
+bass, so veins read as lit tubes stacked over one another. Both engines
+render it (tonemap.frag on the GPU, dtouch.physarum.relief on numpy).
+
 Two engines run the same model behind the same contract: the GPU field
 (dtouch.physarum_gl — millions of agents on the full grid, moderngl
 ping-pong) is tried first and the numpy field (dtouch.physarum) is the
@@ -95,6 +100,68 @@ REGIME_DWELL = (15.0, 45.0)      # dwell range, seconds, order randomized
 # keep map's negative side (see dtouch.physarum MELT_DROP).
 MELT_VAR = 3e-4
 MELT_GAIN = 0.55
+
+# ----- depth: the picture lit as a relief (art-director call 2026-09-24) -----
+# The trail is read as a height field and lit by one key light
+# (shaders/physarum/tonemap.frag), so veins read as lit tubes: a bright rim
+# on one side, a dark crease on the other, thin veins visibly UNDER trunks.
+# Chosen over stratified layers (3.4x the cost, nothing for the blob looks)
+# and a volumetric glow (veiled faint strands instead of pushing them back).
+#
+# Per-look depth. The veins looks take it hardest (tubes and under-crossings
+# read strongest; on lightning it also exposes bead-like density pulses along
+# trunks, kept as a feature). The blob looks stay modest: ghost goes chrome
+# near 1.0, and amoeba's and breath's biggest blobs saturate, band into
+# contours and grow a hard shadow line there, while 0.5-0.6 pulls hidden
+# anatomy out of their white blow-out. Custom looks and panic get the default.
+LOOK_DEPTH = {"veinwork": 0.9, "lightning": 0.9, "ghost": 0.6,
+              "amoeba": 0.5, "breath": 0.5}
+DEPTH_DEFAULT = 0.6
+# The light orbits. A light that never moves reads as an emboss filter; a
+# moving one is the strongest shape cue a flat picture can give (creases
+# slide around each tube, and which vein sits on top re-reads as it turns).
+# These are starting values from stills: the orbit has NOT been seen in
+# motion, and the motion playtest is where ORBIT_S (try 32-90 s) and the
+# rake get tuned.
+DEPTH_ORBIT_S = 48.0             # seconds per full turn of the key light
+DEPTH_AZ0 = 0.75 * np.pi         # start azimuth, SCREEN space (+y up): upper left
+# Elevation is the light's z (sine of its angle above the picture). The bass
+# lowers it (the kick rakes the light across the relief, so creases deepen and
+# shadows lengthen on the beat): elev = ELEV_HI - RAKE * sens * bass, clamped
+# to [ELEV_LO, ELEV_HI]. ELEV_LO sits far above the shader's z floor
+# (dtouch.physarum.RELIEF_MIN_Z), so the host clamp never engages here.
+DEPTH_ELEV_HI = 0.63
+DEPTH_ELEV_LO = 0.30
+DEPTH_RAKE = 0.30
+# Whether the Depth slider rides FEEL_CURVE like the MOLD sliders. It does
+# not: linear depth already clears the perceptibility floor at 0.3 (the
+# honest-slider test in tests/test_physarum_gl.py), and the curve would spend
+# the bottom of the slider on a jump from flat to 70% relief.
+DEPTH_FEEL_CURVE = False
+
+
+def depth_light(t, bass=0.0, sens=1.0):
+    """The key light at clock `t` seconds, in SCREEN space (+x right, +y up,
+    +z toward the viewer), unit length: the orbit plus the bass rake. The
+    browser port does the same arithmetic from looks.json's `depth` block."""
+    az = DEPTH_AZ0 + 2.0 * np.pi * t / DEPTH_ORBIT_S
+    elev = min(max(DEPTH_ELEV_HI - DEPTH_RAKE * sens * bass, DEPTH_ELEV_LO),
+               DEPTH_ELEV_HI)
+    ce = float(np.sqrt(1.0 - elev * elev))
+    return (float(np.cos(az)) * ce, float(np.sin(az)) * ce, float(elev))
+
+
+def screen_to_grid(light):
+    """SCREEN-space light -> the grid-texel space tonemap.frag reads. Row 0 is
+    the top of the desktop window, so screen-up is grid -y."""
+    x, y, z = light
+    return (x, -y, z)
+
+
+def depth_feel(v):
+    """Depth slider value -> engine depth (see DEPTH_FEEL_CURVE)."""
+    v = min(max(float(v), 0.0), 1.0)
+    return v ** FEEL_CURVE if DEPTH_FEEL_CURVE else v
 
 
 def _regime_mults(name):
@@ -172,33 +239,33 @@ class PhysarumMode:
     BUILTIN = {
         "veinwork":  dict(point_bg="veins", point_fg="fingers", palette="arctic",
                           matte="auto", food=0.35, gain=1.0, decay=0.94, exposure=3.5,
-                          weave=0.7, evolve=0.5, react=0.7),
+                          weave=0.7, evolve=0.5, react=0.7, depth=LOOK_DEPTH["veinwork"]),
         "amoeba":    dict(point_bg="cells", point_fg="storm", palette="fire",
                           matte="motion", food=0.50, gain=1.1, decay=0.92, exposure=3.0,
-                          weave=0.55, evolve=0.6, react=0.8),
+                          weave=0.55, evolve=0.6, react=0.8, depth=LOOK_DEPTH["amoeba"]),
         "ghost":     dict(point_bg="haze", point_fg="web", palette="mono",
                           matte="person", food=0.60, gain=0.9, decay=0.96, exposure=4.5,
-                          weave=0.5, evolve=0.75, react=0.6),
+                          weave=0.5, evolve=0.75, react=0.6, depth=LOOK_DEPTH["ghost"]),
         "lightning": dict(point_bg="web", point_fg="fingers", palette="violet",
                           matte="edges", food=0.45, gain=1.4, decay=0.90, exposure=3.0,
-                          weave=0.65, evolve=0.6, react=0.8),
+                          weave=0.65, evolve=0.6, react=0.8, depth=LOOK_DEPTH["lightning"]),
         "breath":    dict(point_bg="haze", point_fg="cells", palette="aurora",
                           matte="luma", food=0.30, gain=0.8, decay=0.95, exposure=4.0,
-                          weave=0.45, evolve=0.7, react=0.5),
+                          weave=0.45, evolve=0.7, react=0.5, depth=LOOK_DEPTH["breath"]),
     }
 
     # apply="reset" merges a look over these; matte / video_bg / video_mix are
     # deliberately absent (keep semantics — rig switches survive look hops).
     DEFAULTS = dict(point_bg="veins", point_fg="fingers", palette="arctic",
                     food=0.35, gain=1.0, decay=0.94, exposure=3.5, grain=0.2,
-                    weave=0.6, evolve=0.5, react=0.7)
+                    weave=0.6, evolve=0.5, react=0.7, depth=DEPTH_DEFAULT)
 
     _UI_DEFAULTS = dict(ph_matte_idx=0, ph_food=0.35, ph_video_bg=False,
                         ph_video_mix=0.5, ph_point_bg_idx=0, ph_point_fg_idx=2,
                         ph_gain=1.0, ph_decay=0.94, ph_palette_idx=0,
                         ph_exposure=3.5, ph_grain=0.2,
                         ph_weave=0.6, ph_evolve=0.5, ph_react=0.7,
-                        ph_quality_idx=0)
+                        ph_depth=DEPTH_DEFAULT, ph_quality_idx=0)
 
     # Per-engine sizing. The CPU field is budgeted at ~21 ms/frame on the
     # working grid; the GPU field runs 2M agents on a 1280x736 grid in ~8 ms
@@ -242,6 +309,10 @@ class PhysarumMode:
         self._burst_pending = False
         self._wave_pending = False
         self._t = 0.0                # evolve clock (sums clamped dt)
+        # the depth key light's own clock, reset in start(): the shell caches
+        # mode instances (shell.py _switch_mode), so on re-entry _t resumes
+        # where it stopped, and the light would too if it rode _t
+        self._orbit_t = 0.0
         self._prev_gray = None       # last grid-res luma (react's motion diff)
         self._motion = None          # lingering motion-energy map (react)
         # SIGNAL-on-GPU state (dtouch.rack_gl): the output composer + rack
@@ -265,6 +336,7 @@ class PhysarumMode:
         self._last_lum = None        # last frame's luminance (staleness input)
         self._melt_pulse = 0.0       # extra melt right after a cast (random)
         self._cast_rng = np.random.default_rng(seed * 104729 + 31)
+        self._depth_last = DEPTH_DEFAULT  # what h restores after FLAT
 
     # ----- lifecycle -----
     def start(self, host):
@@ -278,6 +350,7 @@ class PhysarumMode:
             self.matte_kind = "auto"
             self.mat = make_matte(self.matte_kind)
         self.pf = self._build_field(host)
+        self._orbit_t = 0.0          # light back at upper left on every entry
 
     def _build_field(self, host):
         """The GPU field when it can be had, else the CPU field — sized per
@@ -407,6 +480,12 @@ class PhysarumMode:
                 Slider("Grain", "ph_grain", 0.0, 1.5, save_key="grain",
                        tip="This frame's raw agent dust over the smooth "
                            "trail. Zero is airbrushed; high is sandstorm."),
+                # the orbit and the bass rake ride under this one control:
+                # they are the instrument breathing, not a knob of their own,
+                # and depth 0 switches them off with everything else
+                Slider("Depth", "ph_depth", 0.0, 1.0, save_key="depth",
+                       tip="Lights the veins as raised tubes. Zero is flat "
+                           "glow; high carves every trunk out of the dark."),
             ]),
         ]
 
@@ -441,6 +520,12 @@ class PhysarumMode:
         self._reg_from = self._reg_to
         others = [n for n in REGIME_NAMES if n != self._reg_to]
         self._reg_to = others[int(rng.integers(len(others)))]
+        # never flat: a cast is meant to land somewhere visibly new, and the
+        # relief is part of every look now (0.4 is already where the blob
+        # looks gain anatomy). Drawn last, which keeps the FIRST cast's
+        # draws as they were before depth existed; every later cast shares
+        # this generator, so its draws come from a shifted part of the stream.
+        ui.ph_depth = round(float(rng.uniform(0.4, 1.0)), 2)
         self._reg_t = 0.0
         self._reg_dwell = float(self._reg_rng.uniform(*REGIME_DWELL))
         self._melt_pulse = 1.0
@@ -448,7 +533,8 @@ class PhysarumMode:
 
     def commands(self):
         """X swaps body/field points; B pours agents onto the subject;
-        W ripples the whole organism outward; Z casts a random regime.
+        W ripples the whole organism outward; Z casts a random regime; H
+        toggles the relief flat and back.
         Burst/wave land at the matte's bright centroid, resolved on the next
         step (commands run between frames, and the shell owns the mouse)."""
         ui, toasts = self.host.ui, self.host.hud.toasts
@@ -473,6 +559,18 @@ class PhysarumMode:
             bg_i, fg_i = self.cast_random()
             toasts.flash("RANDOM  body %s / field %s"
                          % (pts[fg_i], pts[bg_i]))
+
+        def _depth():
+            # h ("height"): flat against the last non-zero depth. A toggle,
+            # not a scene change, so it stays out of AUTO_RELEASE_KEYS.
+            cur = float(getattr(ui, "ph_depth", DEPTH_DEFAULT))
+            if cur > 0.0:
+                self._depth_last = cur
+                ui.ph_depth = 0.0
+                toasts.flash("FLAT")
+            else:
+                ui.ph_depth = self._depth_last
+                toasts.flash("DEPTH %.1f" % ui.ph_depth)
         return {"physarum.swap": Command("physarum.swap",
                                          "Swap body/field points", "x", _swap),
                 "physarum.burst": Command("physarum.burst",
@@ -481,7 +579,9 @@ class PhysarumMode:
                                          "Radial wave", "w", _wave),
                 "physarum.random": Command("physarum.random",
                                            "Random regime (always pays)", "z",
-                                           _random)}
+                                           _random),
+                "physarum.depth": Command("physarum.depth",
+                                          "Depth on/flat", "h", _depth)}
 
     def safe_look(self):
         return "veinwork"
@@ -577,6 +677,7 @@ class PhysarumMode:
         # network's CHARACTER (vein width, mesh scale) never changed.
         # Our own design: this mode's own parameters, no external tables.
         self._t += dt
+        self._orbit_t += dt
         weave_base = weave
         extra_jitter = 0.0
         reg_fade_pulse = 0.0
@@ -682,6 +783,16 @@ class PhysarumMode:
         # it doubles as the length-unit conversion onto the GL grid
         pf.gain = gain * self._px_scale
         pf.exposure = exposure
+        # depth: the relief's amount, and the key light orbiting on its own
+        # clock (reset in start(), so it is upper-left on every entry to the
+        # mode, not only the first) with the bass
+        # raking it lower. The light is authored in screen space and flipped
+        # into the grid space the shader reads. Both engines take the same
+        # two values; depth 0 is the flat picture on either.
+        pf.depth = depth_feel(self._ui("ph_depth", DEPTH_DEFAULT))
+        bass = float(audio_levels["bass"]) if audio_levels is not None else 0.0
+        pf.light = screen_to_grid(
+            depth_light(self._orbit_t, bass, float(self._ui("sens", 1.0))))
 
         small = cv2.resize(frame_bgr, (MATTE_W, MATTE_H))
         m = cv2.resize(self.mat.compute(small), (gw, gh))
@@ -736,8 +847,9 @@ class PhysarumMode:
         # is up — so the moment evolve rises it already knows what is stale.
         # Grain dust is blurred out first or it would hide stasis.
         if self._last_lum is not None:
-            # input is either the full luminance (CPU path) or the GL stats
-            # subsample (GPU-rack path) — either resizes to the half grid
+            # input is the engine's lum_sample(): the full pre-relief
+            # luminance (CPU) or the GL stats subsample — either resizes to
+            # the half grid
             lh = cv2.resize(self._last_lum, ((gw + 1) // 2, (gh + 1) // 2),
                             interpolation=cv2.INTER_AREA)
             lh = cv2.blur(lh, (5, 5))
@@ -833,7 +945,16 @@ class PhysarumMode:
                 return out
 
         lum = pf.luminance()
-        self._last_lum = lum         # staleness tracker input, next frame
+        # staleness tracker input, next frame: the engine's flat sample, the
+        # same one the GPU-rack path above feeds. Not `lum` — with depth > 0
+        # that is relief-lit, and the lighting (dark flanks, the orbiting
+        # light's variance) would read as the organism changing and weaken
+        # the melt, so the same organism would melt differently depending on
+        # depth and on whether the rack is on.
+        # lum_sample() is None only on an empty trail, where `lum` is flat
+        # zeros on both engines (no relief is applied to an empty picture)
+        samp = pf.lum_sample()
+        self._last_lum = samp if samp is not None else lum
         if pal == "video":
             # veins lit by the footage's own color — the mold as a lampshade
             color = cv2.cvtColor(cv2.resize(small, (gw, gh)),
