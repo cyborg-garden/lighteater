@@ -339,10 +339,11 @@ def test_every_shader_file_exists_and_carries_no_host_lines():
         assert "precision " not in body, f"{name} carries a precision line"
 
 
-@pytest.mark.parametrize("name", SHADER_FILES)
-def test_shader_stays_inside_glsl_es_300(name):
-    """Static lint for the GLSL 3.30 ∩ ES 3.00 subset the site vendors."""
-    body = load_shader(name, version_line="").split("#line 1\n", 1)[1]
+def _lint_es300(name, body):
+    """Static lint for the GLSL 3.30 ∩ ES 3.00 subset the site vendors, on a
+    shared file's body (no host lines). Returns the comment-stripped code for
+    any per-file checks. Shared by every browser-shared unit's suite
+    (tests/test_dither_shared.py imports it)."""
     code = "\n".join(l.split("//", 1)[0] for l in body.splitlines())
     banned = ("double", "dvec", "usampler", "isampler", "sampler1D", "sampler3D",
               "image2D", "imageStore", "imageLoad", "gl_FragColor", "texture2D(",
@@ -359,6 +360,14 @@ def test_shader_stays_inside_glsl_es_300(name):
     if name.endswith(".frag"):
         assert "layout(location = 0) out vec4" in code, \
             f"{name}: fragment output needs an explicit layout(location = 0)"
+    return code
+
+
+@pytest.mark.parametrize("name", SHADER_FILES)
+def test_shader_stays_inside_glsl_es_300(name):
+    """Static lint for the GLSL 3.30 ∩ ES 3.00 subset the site vendors."""
+    body = load_shader(name, version_line="").split("#line 1\n", 1)[1]
+    code = _lint_es300(name, body)
     if name == "deposit.vert":
         assert "gl_PointSize = 1.0" in code   # ES has no glPointSize
 

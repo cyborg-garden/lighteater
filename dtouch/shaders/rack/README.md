@@ -24,5 +24,7 @@ together with per-stage parity tests.
 | `blit.frag`        | offset texel copy (glitch tile capture + replay)         |
 | `crush.frag`       | hard bit-depth quantisation (roundEven == np.round)      |
 | `downsample.frag`  | bilinear full res -> dither working res                  |
-| `dither.frag`      | ordered dither (Bayer / blue-noise threshold texture)    |
 | `compose.frag`     | nearest-neighbour upscale + scanlines + final u8 encode  |
+
+The rack's ordered-dither pass, `dither.frag`, lives in the browser-shared unit
+`../dither/` (loaded by `rack_gl.load_shared_shader`); see that README.

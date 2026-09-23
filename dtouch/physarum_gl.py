@@ -63,7 +63,8 @@ AGENT_TEX_W = 2048
 STATS_STRIDE = 4
 
 
-SHADER_DIR = os.path.join(os.path.dirname(__file__), "shaders", "physarum")
+SHADERS_ROOT = os.path.join(os.path.dirname(__file__), "shaders")
+SHADER_DIR = os.path.join(SHADERS_ROOT, "physarum")
 SHADER_FILES = ("fullscreen.vert", "update.frag", "deposit.vert", "deposit.frag",
                 "blur.frag", "stats.frag", "tonemap.frag", "impulse.frag")
 
@@ -72,13 +73,19 @@ SHADER_FILES = ("fullscreen.vert", "update.frag", "deposit.vert", "deposit.frag"
 GLSL_VERSION_LINE = "#version 330 core\n"
 
 
-def load_shader(name, version_line=GLSL_VERSION_LINE):
-    """Source of `dtouch/shaders/physarum/<name>` with the version line
-    prepended. A `#line 1` follows it so compile errors keep file-true
-    line numbers."""
-    with open(os.path.join(SHADER_DIR, name), "r", encoding="utf-8") as fh:
+def load_shared_shader(unit, name, version_line=GLSL_VERSION_LINE):
+    """Source of the browser-shared `dtouch/shaders/<unit>/<name>` with the
+    version line prepended. A `#line 1` follows it so compile errors keep
+    file-true line numbers. The one loader for every browser-shared unit
+    (physarum here, dither via dtouch.rack_gl)."""
+    with open(os.path.join(SHADERS_ROOT, unit, name), "r", encoding="utf-8") as fh:
         body = fh.read()
     return version_line + "#line 1\n" + body
+
+
+def load_shader(name, version_line=GLSL_VERSION_LINE):
+    """Source of `dtouch/shaders/physarum/<name>` (see load_shared_shader)."""
+    return load_shared_shader("physarum", name, version_line)
 
 
 class PhysarumGLUnavailable(RuntimeError):
