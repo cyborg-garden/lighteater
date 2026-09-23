@@ -45,8 +45,9 @@ Both are generated from the Python source of truth by
 
 and `tests/test_dither_shared.py` fails when either drifts from it, so
 regenerate after touching the Dither mode's `PALETTES`, `AUTHORED_INVERSE`,
-`BUILTIN`, `DEFAULTS`, constants, the menu cards, the blue-noise asset, or
-anything in `dtouch/dither.py`. A rerun with nothing changed is a no-op.
+`BUILTIN`, `DEFAULTS`, constants, the menu cards (including `AUTO_ID` /
+`AUTO_ACCENT`), the `dtouch/auto.py` cadence constants, the blue-noise
+asset, or anything in `dtouch/dither.py`. A rerun with nothing changed is a no-op.
 
 - `dither_looks.json`: the mode's `title` / `key` / `blurb` / `accent`
   (RGB), `algos`, `ordered`, `web_algos` (the ordered algorithms the browser
@@ -57,8 +58,12 @@ anything in `dtouch/dither.py`. A rerun with nothing changed is a no-op.
   (built-ins whose algorithm is in `web_algos`), `defaults`, `constants`,
   `matrices` (`bayer4` = `_bayer_matrix(4) * 16`, `bluenoise64` = the asset
   times 4096, both exact integers; divide on upload), `luts` (`lin` per
-  levels, `enc` per `"levels,gamma"`), and `modes` (the home-menu card of
-  each mode the page shows, accent as RGB).
+  levels, `enc` per `"levels,gamma"`), `modes` (the home-menu card of
+  each card the page shows, accent as RGB: `physarum`, `dithergirl`, and
+  `auto`, the AUTO card from `dtouch/menu.py`), and `autopilot`
+  (`dtouch/auto.py`'s `DWELL`, `MODE_EVERY` with `mode_every_high:
+  "exclusive"` because it feeds numpy's `Generator.integers`,
+  `CAST_CHANCE`, `FIRST_DWELL`, `DT_MAX` and `CASTS`).
 - `dither_goldens.json`: three 64x64 fixtures given as rules (`gradient`
   holds all 256 codes), the plane rule (`code / 255` in float32), and:
   `core` (48 cases: Bayer and Blue noise x bits 1-4 x gamma on/off x bias

@@ -12,8 +12,10 @@ desktop code, never retyped.
   algorithm lists, palettes and their resolved 1-bit pairs, built-in looks,
   defaults, constants, the two threshold matrices as exact integers, and the
   linearize / level-encode LUTs `dither.frag` samples. Also, under `modes`,
-  the home-menu card of every mode the page shows, so the web menu vendors
-  its cards instead of retyping them.
+  the home-menu card of every card the page shows (its two modes and the
+  AUTO card), so the web menu vendors its cards instead of retyping them,
+  and under `autopilot` the dtouch/auto.py cadence constants the page's
+  autopilot port (src/scripts/lighteater/auto.js) runs on.
 - `dither_goldens.json` (imported only by the site's tests and verifier):
   level indices from `dtouch.dither._ordered_indices` on three rule-defined
   64x64 fixtures, Floyd-Steinberg indices for the follow-up port, and
@@ -34,7 +36,9 @@ import numpy as np
 from .dither import (_MID_GREY_LINEAR, _bayer_matrix, _blue_noise_matrix,
                      _encode_levels, _ordered_indices, _srgb2lin_lut,
                      floyd_steinberg)
-from .menu import MENU_SCRIM, registry_cards
+from .auto import (CAST_CHANCE, CASTS, DT_MAX, DWELL, FIRST_DWELL,
+                   MODE_EVERY)
+from .menu import AUTO_ID, MENU_SCRIM, registry_cards
 from .modes.dithergirl import (ALGOS, AUTHORED_INVERSE, BIASES, HUE_HI, HUE_LO,
                                LEGACY_PALETTES, LEGIBILITY_FLOOR, ORDERED,
                                PALETTES, SCALE_DEFAULT, SCALE_HI, SCALE_LO,
@@ -46,10 +50,11 @@ UNIT_DIR = os.path.join(os.path.dirname(__file__), "shaders", "dither")
 LOOKS_PATH = os.path.join(UNIT_DIR, "dither_looks.json")
 GOLDENS_PATH = os.path.join(UNIT_DIR, "dither_goldens.json")
 
-# The home-menu cards the page shows, in the page's card order (the design's
-# two-card menu: no Particles, no AUTO, no reserved Flocking card). The card
-# fields themselves come from dtouch/menu.py registry_cards().
-WEB_MODES = ("physarum", "dithergirl")
+# The home-menu cards the page shows, in the page's card order: its two modes
+# and the AUTO card (dtouch/menu.py AUTO_ID), with no Particles and no
+# reserved Flocking card. The card fields themselves come from
+# dtouch/menu.py registry_cards().
+WEB_CARDS = ("physarum", "dithergirl", AUTO_ID)
 
 # What the browser may claim: the ordered algorithms `_dither` renders.
 # ASCII is ordered but never reaches `_dither` (dtouch/modes/dithergirl.py:361
@@ -84,11 +89,27 @@ def _stops(stops):
 def _cards():
     by_id = {c.id: c for c in registry_cards()}
     out = {}
-    for mode_id in WEB_MODES:
-        c = by_id[mode_id]
-        out[mode_id] = {"id": c.id, "title": c.title, "key": c.key,
+    for card_id in WEB_CARDS:
+        c = by_id[card_id]
+        out[card_id] = {"id": c.id, "title": c.title, "key": c.key,
                         "blurb": c.blurb, "accent": _rgb(c.accent)}
     return out
+
+
+def _autopilot():
+    """dtouch/auto.py's cadence, read from the module. MODE_EVERY feeds
+    numpy's Generator.integers(lo, hi), whose high end is exclusive, so the
+    hop comes after lo to hi - 1 re-casts; `mode_every_high` says so rather
+    than leaving the port to guess."""
+    return {
+        "dwell": [float(v) for v in DWELL],
+        "mode_every": [int(v) for v in MODE_EVERY],
+        "mode_every_high": "exclusive",
+        "cast_chance": float(CAST_CHANCE),
+        "first_dwell": float(FIRST_DWELL),
+        "dt_max": float(DT_MAX),
+        "casts": list(CASTS),
+    }
 
 
 def _matrices():
@@ -162,6 +183,7 @@ def looks_payload():
         "matrices": _matrices(),
         "luts": _luts(),
         "modes": _cards(),
+        "autopilot": _autopilot(),
     }
 
 

@@ -194,3 +194,36 @@ def test_shared_frag_reproduces_the_core_goldens_with_identity_enc(looks, golden
                 tex.release()
     finally:
         ctx.release()
+
+
+def test_autopilot_block_is_dtouch_auto(looks):
+    """The browser's autopilot port runs on these numbers, so they must be
+    dtouch/auto.py's own, not a copy that drifted."""
+    from dtouch import auto
+    a = looks["autopilot"]
+    assert a["dwell"] == list(auto.DWELL)
+    assert a["mode_every"] == list(auto.MODE_EVERY)
+    assert a["cast_chance"] == auto.CAST_CHANCE
+    assert a["first_dwell"] == auto.FIRST_DWELL
+    assert a["dt_max"] == auto.DT_MAX
+    assert a["casts"] == list(auto.CASTS)
+    # the claim the port relies on: integers(lo, hi) never returns hi
+    assert a["mode_every_high"] == "exclusive"
+    rng = np.random.default_rng(0)
+    draws = {int(rng.integers(*auto.MODE_EVERY)) for _ in range(2000)}
+    assert draws == set(range(auto.MODE_EVERY[0], auto.MODE_EVERY[1]))
+
+
+def test_modes_carry_the_auto_card(looks):
+    from dtouch.menu import AUTO_ACCENT, AUTO_ID, registry_cards
+    card = next(c for c in registry_cards() if c.id == AUTO_ID)
+    assert looks["modes"][AUTO_ID] == {
+        "id": AUTO_ID, "title": card.title, "key": card.key,
+        "blurb": card.blurb, "accent": list(AUTO_ACCENT[::-1])}
+    # the page's card order: the two modes, then AUTO
+    assert list(looks["modes"]) == ["physarum", "dithergirl", AUTO_ID]
+
+
+def test_exporter_rerun_is_a_no_op():
+    assert dumps_looks() == dumps_looks()
+    assert dumps_goldens() == dumps_goldens()

@@ -539,6 +539,22 @@
    "key": "d",
    "blurb": "live + still\ndithering",
    "accent": [245,140,245]
+  },
+  "auto": {
+   "id": "auto",
+   "title": "AUTO",
+   "key": "a",
+   "blurb": "it plays itself",
+   "accent": [255,230,120]
   }
+ },
+ "autopilot": {
+  "dwell": [25.0,55.0],
+  "mode_every": [4,8],
+  "mode_every_high": "exclusive",
+  "cast_chance": 0.45,
+  "first_dwell": 3.0,
+  "dt_max": 0.25,
+  "casts": ["physarum.burst","physarum.wave","physarum.random","physarum.swap"]
  }
 }
