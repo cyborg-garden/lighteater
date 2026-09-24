@@ -65,6 +65,14 @@ def _boot(weave=0.0, evolve=0.0, react=0.0, seed=7, point=None):
     mode = PhysarumMode(matte="luma", grid=GRID, n=N, seed=seed, engine="cpu")
     mode.start(host)
     mode.configure_ui(host.ui)
+    # Depth (the lit relief, a LOOK control) off: these batches measure the
+    # ORGANISM's structure, and their floors were calibrated on the flat
+    # tonemap. The relief darkens every vein's far flank, which moves
+    # threshold counts like _loops without the structure changing (measured
+    # 2026-09-24 at the default depth 0.6: weave-0.7 loops 13 -> 5, weave
+    # branch diff 0.065 -> 0.059 at 0.3). Depth's own perceptibility is
+    # pinned in tests/test_physarum_gl.py.
+    host.ui.ph_depth = 0.0
     host.ui.ph_matte_idx = 5          # luma — deterministic on synth frames
     host.ui.ph_weave = weave
     host.ui.ph_evolve = evolve

@@ -32,6 +32,14 @@ CAST_CHANCE = 0.45
 # The very first re-cast comes fast: a control that appears to do nothing for
 # the first 40 seconds is a control the user believes is broken.
 FIRST_DWELL = 3.0
+# The most a single tick may advance the clock, seconds. A stalled frame (a
+# mode rebuild, a window drag, a laptop lid) must not fire a re-cast the
+# instant it resumes (see `tick`).
+DT_MAX = 0.25
+# The theatrical moves a re-cast may throw (see `_cast`). Named here, not
+# inline, so dtouch/dither_looks.py can export them for the browser port.
+CASTS = ("physarum.burst", "physarum.wave", "physarum.random",
+         "physarum.swap")
 
 
 class Autopilot:
@@ -99,7 +107,7 @@ class Autopilot:
         """
         if not self.on:
             return []
-        self._t += min(max(float(dt), 0.0), 0.25)
+        self._t += min(max(float(dt), 0.0), DT_MAX)
         if self._t < self._next:
             return []
         self._t = 0.0
@@ -135,6 +143,4 @@ class Autopilot:
         """A theatrical move. Only ever mode-local commands that are safe to
         dispatch when the mode does not have them — the shell drops unknown
         names rather than raising, so this stays a hint, not a demand."""
-        casts = ("physarum.burst", "physarum.wave", "physarum.random",
-                 "physarum.swap")
-        return casts[int(self._rng.integers(len(casts)))]
+        return CASTS[int(self._rng.integers(len(CASTS)))]

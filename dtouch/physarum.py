@@ -195,6 +195,105 @@ MELT_FLOOR = 0.70
 # multi-scale structure — filigree between the trunk lines.
 HETERO_MULTS = np.array([0.45, 1.0, 1.9], np.float32)
 
+# ----- depth: the picture lit as a relief -----------------------------------
+# The numpy twin of the relief branch in shaders/physarum/tonemap.frag, so the
+# Depth control does the same thing on the CPU fallback. A visible control
+# that silently does nothing on one engine fails the honest-controls bar.
+# The constants are the shader's, copied by value (GLSL cannot import them);
+# tests/test_physarum_gl.py renders both on a fixed grown field and on tall
+# synthetic ridges and holds them within 1e-3; a one-sided change to any of
+# these constants should fail there (checked by mutation when written).
+RELIEF_K = 0.25          # height compression (trail/norm -> h)
+RELIEF_BUMP = 5.0        # normal steepness
+RELIEF_BROAD = 0.5       # share of the 3 px gradient in the normal
+RELIEF_AMB = 0.30        # key-light floor on the far side of a vein
+RELIEF_SHADOW = 2.5      # cast shadow strength
+RELIEF_CAVITY = 1.0      # cavity darkening strength
+RELIEF_GROUND = 0.8      # faint ground brightness (1 = untouched)
+# The shading divides by the light's z; the host keeps it at or above this
+# (the shader deliberately has no guard of its own — see its header).
+RELIEF_MIN_Z = 0.05
+# Key light in GRID-TEXEL space (+y = row index) that both engines start
+# with: upper-left ON SCREEN, 51 degrees up. Row 0 is the top of the desktop
+# window (tests/test_physarum_gl.py
+# test_trail_rows_and_columns_are_grid_coordinates), so "up" on screen is -y
+# here. The prototype's constant was (-0.5443, +0.5443, 0.6234) because its
+# harness drew row 0 at the bottom; copied as is, it lit the desktop from the
+# lower left.
+RELIEF_LIGHT = (-0.5443, -0.5443, 0.6234)
+
+
+def relief_light(light):
+    """The `u_light` a host may hand the shader: `light` normalised, with z
+    raised to RELIEF_MIN_Z when it sits lower (then re-normalised). Both
+    engines route their light through here, once per frame."""
+    v = np.asarray(light, np.float64)
+    n = float(np.linalg.norm(v))
+    if n <= 0.0:
+        v = np.asarray(RELIEF_LIGHT, np.float64)
+        n = float(np.linalg.norm(v))
+    v = v / n
+    if v[2] < RELIEF_MIN_Z:
+        xy = v[:2]
+        r = float(np.linalg.norm(xy))
+        s = np.sqrt(1.0 - RELIEF_MIN_Z * RELIEF_MIN_Z) / r if r > 0 else 0.0
+        v = np.array([xy[0] * s, xy[1] * s, RELIEF_MIN_Z])
+    return (float(v[0]), float(v[1]), float(v[2]))
+
+
+def _smoothstep(e0, e1, x):
+    t = np.clip((x - np.float32(e0)) * np.float32(1.0 / (e1 - e0)), 0.0, 1.0)
+    return t * t * (np.float32(3.0) - np.float32(2.0) * t)
+
+
+def relief(lum, total, inv_norm, depth, light):
+    """Light the tonemapped `lum` (gh, gw) as a relief of the trail height,
+    exactly as tonemap.frag's u_depth > 0 branch does: `total` is the
+    channel-summed trail, `inv_norm` 1/p95, `light` the grid-space key light
+    (already through relief_light). Returns lum itself at depth <= 0.
+
+    Neighbours clamp at the grid edge, like the shader's texelFetch clamp
+    (np.roll would wrap, which the shader does not). The shader's `round` on
+    the shadow-march offsets may round exact halves either way (GLSL leaves
+    it to the implementation); np.round goes to even. Only an azimuth that
+    lands a march offset on exactly .5 can tell them apart."""
+    if depth <= 0.0:
+        return lum
+    gh, gw = lum.shape
+    h = (1.0 - np.exp(np.float32(-RELIEF_K * inv_norm) * total)).astype(np.float32)
+    P = 5                                          # widest reach: the 5 px march
+    hp = np.pad(h, P, mode="edge")
+
+    def at(dx, dy):                                # h at (col + dx, row + dy)
+        return hp[P + dy:P + dy + gh, P + dx:P + dx + gw]
+
+    e1, w1, n1, s1 = at(1, 0), at(-1, 0), at(0, 1), at(0, -1)
+    e3, w3, n3, s3 = at(3, 0), at(-3, 0), at(0, 3), at(0, -3)
+    b = np.float32(RELIEF_BROAD)
+    gx = (e1 - w1) * np.float32(0.5) * (1 - b) + (e3 - w3) * np.float32(1 / 6.0) * b
+    gy = (n1 - s1) * np.float32(0.5) * (1 - b) + (n3 - s3) * np.float32(1 / 6.0) * b
+    nx, ny = -gx * np.float32(RELIEF_BUMP), -gy * np.float32(RELIEF_BUMP)
+    inv = np.float32(1.0) / np.sqrt(nx * nx + ny * ny + np.float32(1.0))
+    nx, ny, nz = nx * inv, ny * inv, inv
+    lx, ly, lz = (np.float32(c) for c in light)
+    shade = (np.float32(RELIEF_AMB) + np.float32(1.0 - RELIEF_AMB)
+             * np.maximum(nx * lx + ny * ly + nz * lz, 0.0) / lz)
+    r = float(np.hypot(lx, ly))
+    dx, dy = (float(lx) / r, float(ly) / r) if r > 0 else (0.0, 0.0)
+    o2 = at(int(np.round(dx * 2.0)), int(np.round(dy * 2.0))) - h
+    o5 = at(int(np.round(dx * 5.0)), int(np.round(dy * 5.0))) - h
+    shadow = 1.0 - np.minimum(
+        np.float32(0.75),
+        np.float32(RELIEF_SHADOW) * np.maximum(0.0, np.maximum(o2, o5 * np.float32(0.7))))
+    ring = np.float32(0.25) * (e3 + w3 + n3 + s3)
+    cavity = 1.0 - np.minimum(np.float32(0.8),
+                              np.float32(RELIEF_CAVITY) * np.maximum(0.0, ring - h))
+    ground = (np.float32(RELIEF_GROUND)
+              + np.float32(1.0 - RELIEF_GROUND) * _smoothstep(0.05, 0.45, h))
+    lit = np.clip(lum * shade * shadow * cavity * ground, 0.0, 1.0)
+    d = np.float32(depth)
+    return (lum + (lit - lum) * d).astype(np.float32)
+
 
 class PhysarumField:
     def __init__(self, n=250_000, gw=480, gh=270, seed=0,
@@ -237,6 +336,10 @@ class PhysarumField:
         self.food = food                # how strongly video luma attracts sensors
         self.exposure = exposure        # tonemap gain on the trail
         self.grain = grain              # raw per-frame deposits in the picture
+        # depth: 0 = the flat picture; up to 1 lights it as a relief under
+        # `light` (grid-texel space). The mode drives both every frame.
+        self.depth = 0.0
+        self.light = RELIEF_LIGHT
         self.reseed_frac = reseed_frac
         self.gain = gain                # global multiplier on sense+step (tempo)
         # Anti-thoroughfare levers (the "weave" family — see PhysarumMode):
@@ -266,6 +369,7 @@ class PhysarumField:
         self._rng = rng
         self._laid = np.zeros((gh, gw, 3), np.float32)
         self._norm = 0.0                # last luminance() percentile (sat cap ref)
+        self._flat_lum = None           # last luminance() before relief (lum_sample)
         # per-agent sense-range multiplier groups for `hetero` (1/3 each)
         self._sense_group = HETERO_MULTS[np.arange(n) % 3].astype(np.float32)
         self.frame = 0                  # drives the zone lattice's slow drift
@@ -726,6 +830,7 @@ class PhysarumField:
             norm = self._norm * NORM_EMA + norm * (1.0 - NORM_EMA)
         self._norm = norm               # feedback for the `sat` sensing cap
         if norm <= 0:
+            self._flat_lum = None
             return np.zeros((self.gh, self.gw), np.float32)
         x = total * (1.0 / norm)
         if self.grain > 0:
@@ -734,4 +839,22 @@ class PhysarumField:
             gnorm = float(laid.mean()) * 4.0
             if gnorm > 0:
                 x = x + self.grain * (laid * (1.0 / gnorm))
-        return (1.0 - np.exp(-self.exposure * x)).astype(np.float32)
+        lum = (1.0 - np.exp(-self.exposure * x)).astype(np.float32)
+        # kept BEFORE the relief: the relief is lighting on the picture, not
+        # a property of the organism, so the mode's staleness tracker reads
+        # this flat copy (lum_sample) and depth cannot move the evolve melt
+        self._flat_lum = lum
+        if self.depth > 0.0:
+            lum = relief(lum, total, 1.0 / norm, float(self.depth),
+                         relief_light(self.light))
+        return lum
+
+    def lum_sample(self):
+        """The last luminance() picture WITHOUT the depth relief, (gh, gw)
+        float32 in [0,1], or None before the first luminance() / on an empty
+        trail. Same contract as PhysarumFieldGL.lum_sample: the staleness
+        tracker's input, which must see the organism rather than the light
+        orbiting over it (a relief-lit input pulls the tracker's mean under
+        the melt gate and adds the orbit's variance, so depth would weaken
+        the melt)."""
+        return self._flat_lum

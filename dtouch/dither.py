@@ -153,7 +153,19 @@ def _bayer_matrix(n: int) -> np.ndarray:
 
 def _ordered_dither(img: np.ndarray, mat: np.ndarray, bits: int,
                     invert: bool | str, gamma: bool) -> np.ndarray:
-    """Shared tile-threshold-quantise core for ordered dithering.
+    """Shared tile-threshold-quantise core for ordered dithering: the level
+    indices of :func:`_ordered_indices`, encoded to output values."""
+    idx, _ = _ordered_indices(img, mat, bits, invert, gamma)
+    return _encode_levels(idx, (1 << bits) - 1, gamma)
+
+
+def _ordered_indices(img: np.ndarray, mat: np.ndarray, bits: int,
+                     invert: bool | str, gamma: bool) -> tuple[np.ndarray, bool]:
+    """Tile-threshold-quantise to uint8 level indices [0, levels], plus the
+    resolved invert flag (``"auto"`` decided on this frame's mean).
+
+    Split out of :func:`_ordered_dither` so the browser port's goldens
+    (``python -m dtouch.dither_looks``) can pin the indices themselves.
 
     ``floor(p · levels + t)`` rounds *down* on average (a value between two
     levels lands on the lower one more often than its fraction warrants), so
@@ -195,7 +207,7 @@ def _ordered_dither(img: np.ndarray, mat: np.ndarray, bits: int,
     idx = (work + threshold).astype(np.uint8)
     if invert:
         np.subtract(np.uint8(levels), idx, out=idx)
-    return _encode_levels(idx, levels, gamma)
+    return idx, bool(invert)
 
 
 def bayer_dither(img: np.ndarray, bits: int = 2, matrix_size: int = 4,

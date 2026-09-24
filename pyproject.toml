@@ -46,4 +46,4 @@ dev = ["pytest>=8.0"]
 packages = ["dtouch", "dtouch.modes"]
 
 [tool.setuptools.package-data]
-dtouch = ["assets/*.npy", "shaders/physarum/*"]
+dtouch = ["assets/*.npy", "shaders/physarum/*", "shaders/dither/*", "shaders/rack/*"]

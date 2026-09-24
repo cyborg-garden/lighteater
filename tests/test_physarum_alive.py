@@ -190,6 +190,35 @@ def test_melt_engages_on_a_stale_scene():
     assert min(mins) < -0.05, min(mins)
 
 
+def test_depth_does_not_move_the_staleness_tracker():
+    """Depth is lighting on the picture, not a property of the organism, so
+    it must stay out of the simulation's feedback. On one FROZEN trail with
+    the key light orbiting, the tracker's stale map is identical at depth 0
+    and depth 0.9. (Review 2026-09-24: the tracker read the relief-lit
+    picture, whose dark flanks and orbiting light cut the mean stale mass
+    by ~37% at depth 0.9 with the organism unchanged.)"""
+    from dtouch.modes.physarum import MELT_VAR
+
+    def stale_map(depth):
+        host, mode = _boot(weave=0.5, evolve=0.8)
+        f = _scene(*GRID)
+        for _ in range(120):
+            mode.step(f, None, 1 / 30)
+        mode.pf.update = lambda *a, **k: None     # freeze the organism
+        host.ui.ph_depth = depth
+        for _ in range(150):                      # 5 s of orbit
+            mode.step(f, None, 1 / 30)
+        assert mode._orbit_t > 4.0                # the light did move
+        ema, var = mode._ema.copy(), mode._var.copy()
+        mode.stop()
+        return (np.clip(1.0 - var / MELT_VAR, 0.0, 1.0)
+                * np.clip((ema - 0.25) * 5.0, 0.0, 1.0))
+
+    flat, deep = stale_map(0.0), stale_map(0.9)
+    assert flat.mean() > 0.01, flat.mean()        # non-vacuous: something is stale
+    np.testing.assert_array_equal(flat, deep)
+
+
 def _gl_field(**kw):
     kw.setdefault("n", 4000)
     kw.setdefault("gw", 96)

@@ -1,8 +1,7 @@
-#version 330 core
 // Stage 5, ordered variants: the tile-threshold-quantise core of
-// dtouch.dither._ordered_dither. The threshold texture is the 4x4 Bayer
+// dtouch.dither._ordered_indices. The threshold texture is the 4x4 Bayer
 // matrix or the 64x64 blue-noise asset. The sRGB transfer functions are
-// NOT computed here — the host uploads dtouch.dither's own float32 LUTs
+// NOT computed here: the host uploads dtouch.dither's own float32 LUTs
 // (linearize-x-levels by u8 code value, and the level-encode table), so
 // every arithmetic step is the same IEEE f32 op on the same values as the
 // numpy path and the pass is bit-exact against it.
@@ -37,7 +36,9 @@ float dither_of(float v, float t) {
 void main() {
     ivec2 xy = ivec2(gl_FragCoord.xy);
     vec3 v = texelFetch(u_src, xy, 0).rgb;
-    float t = texelFetch(u_mat,
-                         ivec2(xy.x % u_mat_size.x, xy.y % u_mat_size.y), 0).r;
+    // tile the matrix by integer arithmetic: xy and u_mat_size are never
+    // negative, so this equals xy % u_mat_size, and ES 3.00 leaves % on
+    // ints undefined for negative operands (see README)
+    float t = texelFetch(u_mat, xy - u_mat_size * (xy / u_mat_size), 0).r;
     f_color = vec4(dither_of(v.r, t), dither_of(v.g, t), dither_of(v.b, t), 1.0);
 }

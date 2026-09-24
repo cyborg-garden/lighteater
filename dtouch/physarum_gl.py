@@ -51,8 +51,9 @@ import os
 
 import numpy as np
 
-from .physarum import (BALLISTIC_DECAY, NORM_EMA, POINTS, SPATIAL_REGIMES,
-                       ZONE_REGIME_COUNT, species_matrix)
+from .physarum import (BALLISTIC_DECAY, NORM_EMA, POINTS, RELIEF_LIGHT,
+                       SPATIAL_REGIMES, ZONE_REGIME_COUNT, relief_light,
+                       species_matrix)
 
 # Agent texture width. One texel per agent; the height is ceil(n / width).
 # 2048 x 16384 (the GL_MAX_TEXTURE_SIZE floor on anything that runs this)
@@ -63,7 +64,8 @@ AGENT_TEX_W = 2048
 STATS_STRIDE = 4
 
 
-SHADER_DIR = os.path.join(os.path.dirname(__file__), "shaders", "physarum")
+SHADERS_ROOT = os.path.join(os.path.dirname(__file__), "shaders")
+SHADER_DIR = os.path.join(SHADERS_ROOT, "physarum")
 SHADER_FILES = ("fullscreen.vert", "update.frag", "deposit.vert", "deposit.frag",
                 "blur.frag", "stats.frag", "tonemap.frag", "impulse.frag")
 
@@ -72,13 +74,19 @@ SHADER_FILES = ("fullscreen.vert", "update.frag", "deposit.vert", "deposit.frag"
 GLSL_VERSION_LINE = "#version 330 core\n"
 
 
-def load_shader(name, version_line=GLSL_VERSION_LINE):
-    """Source of `dtouch/shaders/physarum/<name>` with the version line
-    prepended. A `#line 1` follows it so compile errors keep file-true
-    line numbers."""
-    with open(os.path.join(SHADER_DIR, name), "r", encoding="utf-8") as fh:
+def load_shared_shader(unit, name, version_line=GLSL_VERSION_LINE):
+    """Source of the browser-shared `dtouch/shaders/<unit>/<name>` with the
+    version line prepended. A `#line 1` follows it so compile errors keep
+    file-true line numbers. The one loader for every browser-shared unit
+    (physarum here, dither via dtouch.rack_gl)."""
+    with open(os.path.join(SHADERS_ROOT, unit, name), "r", encoding="utf-8") as fh:
         body = fh.read()
     return version_line + "#line 1\n" + body
+
+
+def load_shader(name, version_line=GLSL_VERSION_LINE):
+    """Source of `dtouch/shaders/physarum/<name>` (see load_shared_shader)."""
+    return load_shared_shader("physarum", name, version_line)
 
 
 class PhysarumGLUnavailable(RuntimeError):
@@ -127,6 +135,11 @@ class PhysarumFieldGL:
         self.food = food
         self.exposure = exposure
         self.grain = grain
+        # depth: 0 = the flat picture (the tonemap's original two-tap path,
+        # bit for bit); up to 1 lights it as a relief under `light`, a
+        # grid-texel-space vector (see tonemap.frag). The mode drives both.
+        self.depth = 0.0
+        self.light = RELIEF_LIGHT
         self.reseed_frac = reseed_frac
         self.gain = gain
         self.sat = sat            # sensor saturation (x trail bright end); 0 = off
@@ -529,6 +542,10 @@ class PhysarumFieldGL:
         p["u_grain"].value = float(self.grain) if gnorm > 0 else 0.0
         p["u_inv_gnorm"].value = (1.0 / gnorm) if gnorm > 0 else 0.0
         p["u_exposure"].value = float(self.exposure)
+        # relief: the host normalises the light and keeps z off the floor
+        # (relief_light) because the shader divides by it unguarded
+        p["u_depth"].value = float(self.depth)
+        p["u_light"].value = relief_light(self.light)
         self.fbo_lum.use()
         self.tex_trail_a.use(0)
         self.tex_laid.use(1)

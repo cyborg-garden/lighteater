@@ -3,21 +3,26 @@
 `dtouch/shaders/physarum/looks.json` is vendored verbatim by
 cyborg-garden-site's /physarum page next to the shaders; this module is its
 single source of truth. Payload: the behavior POINTS the shaders' uniforms
-are fed from, the mode's DEFAULTS and BUILTIN looks, and every palette as
-both its gradient stops and the resolved 256-entry RGB LUT.
+are fed from, the mode's DEFAULTS and BUILTIN looks, every palette as
+both its gradient stops and the resolved 256-entry RGB LUT, and the relief
+light's orbit + bass rake (`depth`).
 
     python -m dtouch.physarum_looks        # rewrite looks.json
 
 tests/test_physarum_gl.py fails when the file on disk no longer matches
-`payload()`, so a change to POINTS / BUILTIN / DEFAULTS / palette stops
-must come with a regenerate.
+`payload()`, so a change to POINTS / BUILTIN / DEFAULTS / palette stops / the
+DEPTH_* constants must come with a regenerate.
 """
 from __future__ import annotations
 
 import json
 import os
 
-from .modes.physarum import _PALETTE_STOPS, PALETTES_PH, PhysarumMode, _palette_lut
+from .modes.physarum import (DEPTH_AZ0, DEPTH_ELEV_HI, DEPTH_ELEV_LO,
+                             DEPTH_FEEL_CURVE, DEPTH_ORBIT_S, DEPTH_RAKE,
+                             FEEL_CURVE,
+                             _PALETTE_STOPS, PALETTES_PH, PhysarumMode,
+                             _palette_lut)
 from .physarum import POINT_NAMES, POINTS
 
 LOOKS_PATH = os.path.join(os.path.dirname(__file__), "shaders", "physarum", "looks.json")
@@ -41,6 +46,23 @@ def payload():
         "builtin": {name: dict(look) for name, look in PhysarumMode.BUILTIN.items()},
         "palette_names": list(PALETTES_PH),
         "palettes": palettes,
+        # the relief light's motion, so the browser vendors the numbers
+        # instead of retyping them (each look carries its own `depth` in
+        # `builtin` / `defaults`). az0 is radians in SCREEN space (+y up):
+        # a host whose row 0 is the screen top passes -y into u_light.
+        # light = (cos az * ce, sin az * ce, elev), ce = sqrt(1 - elev^2),
+        # az = az0 + 2 pi t / orbit_s, elev = clamp(elev_hi - rake * sens *
+        # bass, elev_lo, elev_hi); feel_curve_applies says whether the
+        # slider value is raised to the MOLD FEEL_CURVE before it is u_depth.
+        "depth": {
+            "orbit_s": float(DEPTH_ORBIT_S),
+            "elev_hi": float(DEPTH_ELEV_HI),
+            "elev_lo": float(DEPTH_ELEV_LO),
+            "rake": float(DEPTH_RAKE),
+            "az0": float(DEPTH_AZ0),
+            "feel_curve_applies": bool(DEPTH_FEEL_CURVE),
+            "feel_curve": float(FEEL_CURVE),
+        },
     }
 
 

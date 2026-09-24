@@ -28,7 +28,9 @@ Split of responsibilities (the parity contract):
   res (cv2 INTER_LINEAR convention), and the video-background screen blend.
 
 Shaders live in ``dtouch/shaders/rack/`` (NOT browser-shared — see that
-directory's README). ``tests/test_rack_gl.py`` holds the backends together
+directory's README), except ``dither.frag``, which lives in the
+browser-shared unit ``dtouch/shaders/dither/`` and is loaded through
+``load_shared_shader``. ``tests/test_rack_gl.py`` holds the backends together
 with per-stage parity tests; the caller binds the context (``with ctx:``,
 the physarum_gl pattern — a foreign moderngl context created later would
 otherwise silently receive these GL calls).
@@ -40,15 +42,18 @@ import os
 import numpy as np
 
 from .circuit_bent import SCANLINE_ROWS
+# The one loader for browser-shared units (version line + `#line 1`).
+from .physarum_gl import load_shared_shader  # noqa: F401  (re-exported)
 from .dither import (_MID_GREY_LINEAR, _bayer_matrix, _blue_noise_matrix,
                      _lut_apply, _srgb2lin_lut, _to_u8, linear_to_srgb)
 
-SHADER_DIR = os.path.join(os.path.dirname(__file__), "shaders", "rack")
+SHADERS_ROOT = os.path.join(os.path.dirname(__file__), "shaders")
+SHADER_DIR = os.path.join(SHADERS_ROOT, "rack")
 
 
 def load_rack_shader(name):
     """Verbatim source of dtouch/shaders/rack/<name> (they carry their own
-    #version line — unlike the browser-shared physarum set)."""
+    #version line — unlike the browser-shared units)."""
     with open(os.path.join(SHADER_DIR, name), "r", encoding="utf-8") as fh:
         return fh.read()
 
@@ -84,7 +89,9 @@ class SignalRackGL:
         self.p_blit = prog("blit.frag")
         self.p_crush = prog("crush.frag")
         self.p_down = prog("downsample.frag")
-        self.p_dither = prog("dither.frag")
+        self.p_dither = ctx.program(
+            vertex_shader=vs,
+            fragment_shader=load_shared_shader("dither", "dither.frag"))
         self.p_compose = prog("compose.frag")
 
         tri = np.array([-1, -1, 3, -1, -1, 3], np.float32)
