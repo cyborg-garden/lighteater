@@ -230,6 +230,8 @@ class PhysarumFieldGL:
         self.bloom_t = 0.0
         self.fractal_error = None  # set when the fractal passes cannot build
         self._nl = None            # per-level bright ends (level_norms)
+        self._stats_pbo = None     # fractal stats, read a frame late (_stats_late)
+        self._stats_pending = False
         self.seed = seed
         self.frame = 0
         self._last_norm = 0.0     # last luminance() percentile (sat cap ref)
@@ -722,7 +724,8 @@ class PhysarumFieldGL:
         """(95th percentile of the trail, mean of this frame's deposits),
         estimated on a stride-STATS_STRIDE subsample read back as floats.
         With the fractal amount up the readback also carries the finer
-        levels (.b, .a) for level_norms, kept in self._last_stats4."""
+        levels (.b, .a) for level_norms, kept in self._last_stats4, and is
+        the previous frame's (_stats_late)."""
         gl = self._gl
         self.p_stats["u_fractal"].value = float(fa)
         self.fbo_stats.use()
@@ -730,12 +733,37 @@ class PhysarumFieldGL:
         self.tex_laid.use(1)
         self.vao_stats.render(gl.TRIANGLES, vertices=3)
         comps = 4 if fa > 0.0 else 2
-        raw = self.fbo_stats.read(components=comps, dtype="f4")
+        if fa > 0.0:
+            raw = self._stats_late()
+        else:
+            self._stats_pending = False
+            raw = self.fbo_stats.read(components=comps, dtype="f4")
         s4 = np.frombuffer(raw, np.float32).reshape(self.sh, self.sw, comps)
         self._last_stats4 = s4 if fa > 0.0 else None
         s = s4[..., :2]
         self._last_stats = s        # free spatial subsample (lum_sample)
         return float(np.percentile(s[..., 0], 95.0)), float(s[..., 1].mean())
+
+    def _stats_late(self):
+        """The fractal stats, read a frame late. The stats pass just drawn
+        is copied into a pixel-pack buffer without waiting for it (the GPU
+        finishes it in the background), and the copy the previous frame
+        queued is what this frame uses: that frame's picture readback has
+        already drained the queue, so it is ready and costs no stall. A
+        synchronous glReadPixels here was the fractal frame's first GPU
+        sync. The browser reads its stats every 6th frame; one frame of lag
+        under the 0.9 EMA on every bright end is not visible. The first
+        fractal frame (from the stock engine, or after a stock frame) has
+        nothing queued and reads synchronously. The stock engine keeps its
+        same-frame read (amount 0 is the pre-fractal engine, bit for bit)."""
+        prev = self._stats_pbo.read() if self._stats_pending else None
+        if self._stats_pbo is None:
+            self._stats_pbo = self.ctx.buffer(reserve=self.sw * self.sh * 16)
+        self.fbo_stats.read_into(self._stats_pbo, components=4, dtype="f4")
+        self._stats_pending = True
+        if prev is None:
+            prev = self.fbo_stats.read(components=4, dtype="f4")
+        return prev
 
     def lum_sample(self):
         """Tonemapped luminance on the stats subsample grid, (sh, sw)

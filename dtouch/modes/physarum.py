@@ -32,7 +32,7 @@ species into three scales of one organism: trunks, veins at half their size,
 hairline threads at half again, the finer ones hanging off the flanks of the
 coarser, densest over the subject, drawn as outlines cut at output size.
 Two slow attention zones drift and bloom into denser lace. The CPU
-fallback does not carry it (see FRACTAL_CPU below): the control hides there
+fallback does not carry it (see the note under LOOK_FRACTAL): the control hides there
 and H says so.
 
 Two engines run the same model behind the same contract: the GPU field
@@ -157,13 +157,13 @@ DEPTH_FEEL_CURVE = False
 LOOK_FRACTAL = {"veinwork": 1.0, "amoeba": 0.7, "ghost": 0.85,
                 "lightning": 0.9, "breath": 0.7}
 FRACTAL_DEFAULT = 0.0
-# The CPU fallback does not run the fractal veins. Its budget is already
-# spent (~21 ms/frame for 100k agents on the 576 grid), and the look is
-# carried by passes numpy cannot afford per frame: a 5x5 Hessian ridge
-# detector and an outline pass at OUTPUT resolution (2731x1536 at 4K). A
-# reduced port would be a different picture under the same name. So on CPU
-# the Fractal slider is hidden and H skips its third step, saying why.
-FRACTAL_CPU = False
+# The CPU fallback does not run the fractal veins (fractal_available() is
+# the GPU engine only). Its budget is already spent (~21 ms/frame for 100k
+# agents on the 576 grid), and the look is carried by passes numpy cannot
+# afford per frame: a 5x5 Hessian ridge detector and an outline pass at
+# OUTPUT resolution (2733x1537 at 4K: fractal_render_size). A reduced port
+# would be a different picture under the same name. So on CPU the Fractal
+# slider is hidden and H skips its third step, saying why.
 
 
 def depth_light(t, bass=0.0, sens=1.0):
@@ -334,7 +334,13 @@ class PhysarumMode:
     # grey and lit share at 1.0x all sit inside 1.8x's seed spread (the
     # per-level bright ends renormalise each level). The tier toast says it.
     # Measured 2026-09-25, M4 Max, 4K out, veinwork at 1.0 (the heaviest
-    # shipped amount).
+    # shipped amount); tests/test_physarum_fractal.py
+    # test_the_quality_tiers_governed_pool_keeps_the_look pins the spread.
+    # `perform` and `balance` keep the full pool: at perform the fractal's
+    # cost on the frame clock was never the pool (mode.step at 4K on a 1.0x
+    # pool measured no faster) but a synchronous stats readback mid-frame.
+    # The engine now reads those stats a frame late (PhysarumFieldGL.
+    # _stats_late), and the fractal frame sits at the stock frame's median.
     FRACTAL_DENSITY_TIER = {"perform": 1.8, "balance": 1.8, "quality": 1.0}
 
     def __init__(self, matte="auto", grid=None, n=None, seed=1, engine="auto"):
@@ -544,8 +550,8 @@ class PhysarumMode:
                 Slider("Depth", "ph_depth", 0.0, 1.0, save_key="depth",
                        tip="Lights the veins as raised tubes. Zero is flat "
                            "glow; high carves every trunk out of the dark."),
-                # GPU only (FRACTAL_CPU): hidden on the CPU fallback rather
-                # than shown doing nothing. The gate is the engine; step()
+                # GPU only (fractal_available): hidden on the CPU fallback
+                # rather than shown doing nothing. The gate is the engine; step()
                 # publishes it as ph_fractal_ok so the predicate stays a
                 # predicate over the UI state, like every other gate
                 Slider("Fractal", "ph_fractal", 0.0, 1.0, save_key="fractal",
@@ -628,10 +634,18 @@ class PhysarumMode:
                          % (pts[fg_i], pts[bg_i]))
 
         def _depth():
-            # h ("height"), three steps like the browser's: flat, the relief,
-            # the relief plus the fractal veins (a look with no fractal
-            # amount, or the CPU engine, keeps two). A toggle, not a scene
-            # change, so it stays out of AUTO_RELEASE_KEYS.
+            """H ("height"): three steps like the browser's, flat (depth 0,
+            fractal 0), the relief (depth, fractal 0), the relief plus the
+            fractal veins (a look with no fractal amount, or the CPU engine,
+            keeps two). A toggle, not a scene change, so it stays out of
+            AUTO_RELEASE_KEYS.
+
+            Depth 0 with fractal above 0 (the sliders or a saved look can
+            set it) is not one of the three steps. The first press reads it
+            as flat: it brings the relief back and drops the fractal. The
+            press after that brings the fractal back, with the relief under
+            it, so H never returns to the fractal without the relief; only
+            the sliders do."""
             self._follow_fractal()
             cur = float(getattr(ui, "ph_depth", DEPTH_DEFAULT))
             fr = float(getattr(ui, "ph_fractal", FRACTAL_DEFAULT))
@@ -672,8 +686,10 @@ class PhysarumMode:
         return "veinwork"
 
     def fractal_available(self):
-        """Whether the running engine draws the fractal veins (GPU only,
-        FRACTAL_CPU). Before start() nothing runs, and nothing is offered."""
+        """Whether the running engine draws the fractal veins: the GPU
+        engine, when its fractal passes built. The CPU fallback has no port
+        (the note under LOOK_FRACTAL). Before start() nothing runs, and
+        nothing is offered."""
         if self.engine != "gl":
             return False
         return getattr(self.pf, "fractal_error", None) is None

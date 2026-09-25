@@ -33,8 +33,8 @@ import cv2
 import numpy as np
 import pytest
 
-from dtouch.modes.physarum import (FRACTAL_CPU, FRACTAL_DEFAULT, LOOK_FRACTAL,
-                                   PALETTES_PH, PhysarumMode)
+from dtouch.modes.physarum import (FRACTAL_DEFAULT, LOOK_FRACTAL, PALETTES_PH,
+                                   PhysarumMode)
 from dtouch.panelspec import apply_look, visible
 from dtouch.physarum import (BLOOM, FRACTAL, FRACTAL_MIX_FULL, FRACTAL_NL,
                              POINT_NAMES, POINTS, PX_REF, SPATIAL_REGIMES,
@@ -622,6 +622,67 @@ def test_the_woken_pool_is_the_pool_on_either_ping_pong_side():
             f.release()
 
 
+class _CountingFbo:
+    """fbo_stats with its synchronous reads counted and every queued
+    pixel-pack copy's contents recorded (the test drains the buffer itself,
+    after the field has queued it)."""
+
+    def __init__(self, fbo):
+        self._fbo, self.sync, self.queued = fbo, 0, 0
+
+    def read(self, *a, **k):
+        self.sync += 1
+        return self._fbo.read(*a, **k)
+
+    def read_into(self, *a, **k):
+        self.queued += 1
+        return self._fbo.read_into(*a, **k)
+
+    def __getattr__(self, name):
+        return getattr(self._fbo, name)
+
+
+def test_fractal_stats_are_read_a_frame_late_without_a_stall():
+    """The fractal frame's stats readback was a synchronous glReadPixels
+    in the middle of the frame: at 4K perform it cost mode.step ~5 ms
+    (median 21 against stock's 16). It is queued into a pixel-pack buffer
+    and used a frame later. Pinned: after the first fractal frame no
+    fractal frame reads the stats synchronously; what a frame uses is
+    exactly the stats the previous frame drew; the stock engine keeps its
+    same-frame read (amount 0 stays the pre-fractal engine), and a return
+    to the fractal starts over with one synchronous read."""
+    f = _gl_field(n=20000)
+    try:
+        spy = f.fbo_stats = _CountingFbo(f.fbo_stats)
+        gray = np.full((108, 192), 0.5, np.float32)
+        matte = np.zeros_like(gray)
+        f.out_size = (640, 360)
+        for _ in range(10):
+            f.update(matte, gray)
+            f.luminance_u8()
+        assert (spy.sync, spy.queued) == (10, 0)            # stock: same frame
+        f.fractal = 1.0
+        drawn = []
+        for i in range(8):
+            f.update(matte, gray)
+            f.luminance_u8()
+            used = f._last_stats4.copy()
+            if i > 0:
+                assert np.array_equal(used, drawn[-1]), i   # last frame's pass
+            drawn.append(np.frombuffer(f._stats_pbo.read(), np.float32).reshape(used.shape))
+        assert (spy.sync, spy.queued) == (11, 8)            # one sync, then none
+        f.fractal = 0.0
+        f.update(matte, gray)
+        f.luminance_u8()
+        assert f._last_stats4 is None and spy.sync == 12
+        f.fractal = 1.0
+        f.update(matte, gray)
+        f.luminance_u8()
+        assert spy.sync == 13                               # nothing stale reused
+    finally:
+        f.release()
+
+
 def test_engine_runs_stock_when_the_fractal_passes_cannot_build(monkeypatch):
     """A context that cannot build the fractal picture passes keeps the
     stock mold (amount 0) and says why, rather than a dead picture; the mode
@@ -691,15 +752,18 @@ PERCEPT_RES = (640, 368)
 
 
 @functools.lru_cache(maxsize=None)
-def _picture(look, seed, amount):
+def _picture(look, seed, amount, tier="perform"):
     """The mode's own output (grey) after PERCEPT_FRAMES on the GL engine,
-    at `look` with its fractal amount overridden to `amount`."""
+    at `look` with its fractal amount overridden to `amount`, and the
+    fractal pool the quality `tier` governs it to (the grid stays fixed)."""
     m = PhysarumMode(matte="luma", seed=seed, engine="gl", grid=(384, 216), n=45000)
+    m._quality = tier
     host = _StubHost(PERCEPT_RES)
     m.start(host)
     try:
         if m.engine != "gl":
             pytest.skip("no GL context available (CI)")
+        assert m.pf.fractal_density == PhysarumMode.FRACTAL_DENSITY_TIER[tier]
         m.configure_ui(host.ui)
         L, ui = PhysarumMode.BUILTIN[look], host.ui
         ui.ph_point_bg_idx = POINT_NAMES.index(L["point_bg"])
@@ -708,6 +772,7 @@ def _picture(look, seed, amount):
         for k in ("food", "gain", "decay", "exposure", "weave", "evolve", "react", "depth"):
             setattr(ui, "ph_" + k, L[k])
         ui.ph_matte_idx = 5                    # luma: deterministic on synth frames
+        ui.ph_quality_idx = PhysarumMode.QUALITY_NAMES.index(tier)
         ui.ph_fractal = amount
         for fr in _scene_frames(PERCEPT_FRAMES):
             out = m.step(fr, None, 1 / 30)
@@ -765,6 +830,32 @@ def test_fractal_slider_is_honest_at_0_3(look):
     assert (got[:, :2] > 1.0).all(), (look, got)
     assert got[:, 0].min() >= EDGE_BAR_03 and got[:, 1].min() >= FINE_BAR_03, (look, got)
     assert got[:, 2].min() >= DELTA_FLOOR, (look, got)
+
+
+@pytest.mark.parametrize("look", LOOKS)
+def test_the_quality_tiers_governed_pool_keeps_the_look(look):
+    """PhysarumMode.FRACTAL_DENSITY_TIER's claim, pinned: `quality` runs the
+    fractal on a 1.0x pool instead of 1.8x, and the picture keeps the look.
+    Over the six seeds, the governed arm's mean edge and fine-structure
+    ratios sit inside the full pool's seed spread, and every seed clears the
+    same bars. Both arms normalise against the same stock picture (amount 0
+    wakes no extra agents, so the pool size cannot reach it). Measured
+    2026-09-25: e.g. veinwork edge x3.42 in [3.33, 3.48], fine x3.11 in
+    [3.07, 3.22]."""
+    tiers = {t: [] for t in ("perform", "quality")}
+    for s in SEEDS:
+        e0, f0 = _fine(_picture(look, s, 0.0))
+        for t, got in tiers.items():
+            e1, f1 = _fine(_picture(look, s, LOOK_FRACTAL[look], t))
+            got.append((e1 / e0, f1 / f0))
+    full, gov = np.array(tiers["perform"]), np.array(tiers["quality"])
+    assert PhysarumMode.FRACTAL_DENSITY_TIER["perform"] == FRACTAL["density"]
+    assert PhysarumMode.FRACTAL_DENSITY_TIER["quality"] == 1.0
+    assert (gov > 1.0).all() and gov[:, 0].min() >= EDGE_BAR and gov[:, 1].min() >= FINE_BAR, (
+        look, gov)
+    for k, what in enumerate(("edge", "fine")):
+        lo, hi, m = full[:, k].min(), full[:, k].max(), gov[:, k].mean()
+        assert lo <= m <= hi, (look, what, f"1.0x mean {m:.2f} outside 1.8x's [{lo:.2f}, {hi:.2f}]")
 
 
 def test_mode_drives_the_fractal_into_the_engine():
@@ -859,10 +950,9 @@ def test_h_steps_flat_relief_fractal_on_the_gpu(tmp_path):
 
 
 def test_cpu_fallback_hides_the_control_and_h_skips_the_fractal_step(tmp_path):
-    """FRACTAL_CPU = False: no numpy port. The slider is hidden, not shown
-    doing nothing, and H cycles flat / relief, saying the third step is
-    GPU-only."""
-    assert FRACTAL_CPU is False
+    """No numpy port (fractal_available is the GPU engine only). The slider
+    is hidden, not shown doing nothing, and H cycles flat / relief, saying
+    the third step is GPU-only."""
     host = _booted(tmp_path, "cpu")
     ui, m = host.ui, host.mode
     assert m.engine == "cpu" and not m.fractal_available()
@@ -902,8 +992,9 @@ def test_cpu_picture_ignores_the_fractal_amount():
 # 4K output), GPU per frame by these two queries: stock 1.9 ms (sim 1.32 +
 # picture 0.59), fractal 3.6 ms (sim 2.23 with 900k agents + picture 1.34:
 # fields at grid size, outlines at 2733x1537). The picture query also holds
-# the CPU work between its GL calls (stats readback, level_norms): with
-# level_norms on a full sort it read 3.33 ms, and the ratio 3.1.
+# the CPU work between its GL calls (level_norms, and the stats readback
+# until the fractal's was queued a frame late): with level_norms on a full
+# sort it read 3.33 ms, and the ratio 3.1.
 FRACTAL_GPU_RATIO = 1.9
 
 
