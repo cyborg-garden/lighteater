@@ -31,7 +31,7 @@ from .commands import Command, CommandRegistry
 from .hud import (AMBER, RED, Hud, OverlayState, cycle_overlay,
                   draw_corner_tick, draw_help, esc_overlay, put_outlined,
                   u as _u)
-from .imgui import DIM, HOVER, PANEL, in_rect
+from .imgui import in_rect, panel_handle, panel_handle_rect
 from .auto import Autopilot
 from .menu import Menu, draw_menu, render_boot_card
 from .modes import REGISTRY, mode_by_id
@@ -1342,9 +1342,9 @@ class Host:
         the sidebar, so the double-click cohort HAD a mouse path to the panel
         and lost it, and the only remaining hint fades after 4 s.
 
-        This is the panel-open chevron in the panel's own shipped collapsed
-        position (top-right), drawn DIM so it reads as chrome rather than
-        content, and it posts the same named command TAB reaches.
+        This is the panel-open handle, the same pixels the collapsed sidebar
+        draws (imgui.panel_handle — sized, placed and outlined there, with
+        the measurements), and it posts the same named command TAB reaches.
 
         It deliberately does NOT draw in HIDDEN. That state's whole contract
         is provably clean output — the OBS capture contract — and output is
@@ -1353,9 +1353,7 @@ class Host:
         ui, g = self.ui, self.ui._gui
         h, w = img.shape[:2]
         ui._hot = g.begin(max(1.0, h / BASE_H), ui.mouse, ui.accent)
-        r = (w - g.S(48), g.S(12), w - g.S(12), g.S(42))
-        g.box(img, r, HOVER if in_rect(r, ui.mouse) else PANEL)
-        g.text(img, "<", w - g.S(37), g.S(33), DIM, 0.6, 2)
+        r = panel_handle(img, hover=in_rect(panel_handle_rect(w, h), ui.mouse))
         ui._hot.append((r, PANEL_OPEN, None))
 
     # ----- the present half of a frame -----
@@ -1396,12 +1394,22 @@ class Host:
                     self._draw_panel_chevron(bgr)
                 else:
                     ui._hot = []   # panel hidden: stale hit-rects must not eat clicks
+                # the HUD paints after the handle (open or close glyph), so
+                # its status line is capped short of the handle's rect —
+                # otherwise a portrait frame's line runs across the handle
+                status_max_x = None
+                if self.panel and self.overlay in (OverlayState.HUD,
+                                                   OverlayState.PANEL):
+                    bh, bw = bgr.shape[:2]
+                    status_max_x = (panel_handle_rect(bw, bh)[0]
+                                    - int(0.5 * _u(bh)))
                 self.hud.draw(bgr, self.overlay, status=self._status_line(),
                               debug_status=self.debug_line(),
                               recording=(self.writer is not None),
                               blackout=self.ps.blackout,
                               camera_lost=camera_lost,
-                              camera_black=camera_black)
+                              camera_black=camera_black,
+                              status_max_x=status_max_x)
             if self.ps.help_open:
                 # help carries the active mode's accent (§5 one-accent)
                 draw_help(bgr, self.help_rows, accent=mode.accent)

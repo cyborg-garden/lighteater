@@ -625,11 +625,10 @@ class OverlayUI:
         pw = g.S(self.panel_w)
         self._panel_px = pw
         if not self.open:
-            r = (w - g.S(48), g.S(12), w - g.S(12), g.S(42))
-            g.box(frame, r, HOVER if _in(r, self.mouse) else PANEL)
-            for yy in (g.S(21), g.S(27), g.S(33)):
-                cv2.line(frame, (w - g.S(40), yy), (w - g.S(20), yy), INK,
-                         max(1, g.S(2)), cv2.LINE_AA)
+            # the same handle the HUD draws (imgui.panel_handle): one
+            # affordance for "open the panel", wherever you meet it
+            r = imgui.panel_handle(
+                frame, hover=_in(imgui.panel_handle_rect(w, h), self.mouse))
             self._hot.append((r, "collapse", None))
             self._draw_status(frame, info)
             return frame
@@ -656,8 +655,39 @@ class OverlayUI:
             self._reveal_scroll = None
         self.scroll = imgui.clamp_scroll(self.scroll, self._content_h, h)
         x, cw, y = px + g.S(16), pw - g.S(32), g.S(30) - self.scroll
-        g.text(frame, self.panel_title, x, y, self.accent, 0.62, 2)
+        # the title keeps clear of the close handle (drawn last, on top):
+        # where its glyphs would reach into the handle's rows (at 720p the
+        # 'LES' of 'PARTICLES' sat under the '>'; 1080p and up clear it
+        # vertically), it shrinks to end S(8) left of the handle. Shrunk,
+        # not ellipsized, so the mode's name still reads in full (the same
+        # choice hud.fit_px makes for the containment flash).
+        hx0, hy0, _, hy1 = imgui.panel_handle_rect(w, h)
+        t_scale, t_thick = 0.62, 2
+        (tw, th), tb = cv2.getTextSize(
+            self.panel_title, cv2.FONT_HERSHEY_SIMPLEX, t_scale * g.s,
+            max(1, int(round(t_thick * g.s))))
+        max_w = hx0 - g.S(8) - x
+        # the title's ink spans rows y-th-1 .. y+tb-1 (measured on
+        # 'lighteater - PARTICLES' at 720p, 1080p and 4K: getTextSize's
+        # baseline is one row past the lowest ink, its height one row short
+        # of the highest)
+        if y - th - 1 <= hy1 and y + tb - 1 >= hy0 and tw > max_w > 0:
+            t_scale *= max_w / tw
+            # Hershey advance is not linear in the scale: step down until
+            # the rendered width really fits
+            while t_scale > 0.2 and cv2.getTextSize(
+                    self.panel_title, cv2.FONT_HERSHEY_SIMPLEX, t_scale * g.s,
+                    max(1, int(round(t_thick * g.s))))[0][0] > max_w:
+                t_scale -= 0.01
+        g.text(frame, self.panel_title, x, y, self.accent, t_scale, t_thick)
         y += g.S(16)
+        # the column starts below the close button (the 2.75u panel handle,
+        # drawn last at a fixed spot), so at scroll 0 no row, section header
+        # or slot badge sits under it: collapse wins every click on its rect,
+        # which would leave whatever lay beneath unreachable. Scrolled rows
+        # still pass under it, as they always did under the old close box.
+        y = max(y + self.scroll,
+                imgui.panel_handle_rect(w, h)[3] + g.S(6)) - self.scroll
         self._blink += 1
 
         # ----- the generic walk: sections, then the shell's global rows -----
@@ -674,10 +704,13 @@ class OverlayUI:
                 y = self._draw_widget(frame, item, x, y, cw, px)
         self._content_h = y + self.scroll + g.S(8)   # column bottom incl. margin, unscrolled
 
-        # collapse button drawn last so it stays fixed and clickable above scrolled content
-        cr = (w - g.S(40), g.S(12), w - g.S(12), g.S(36))
-        g.box(frame, cr, HOVER if _in(cr, self.mouse) else BTN)
-        g.text(frame, ">", w - g.S(33), g.S(30), INK, 0.55, 2)
+        # collapse button drawn last so it stays fixed and clickable above
+        # scrolled content. It is the panel handle itself, on the handle's
+        # rect (imgui.panel_handle): a second click where the handle was
+        # closes the panel instead of landing on the row under it.
+        cr = imgui.panel_handle(
+            frame, hover=_in(imgui.panel_handle_rect(w, h), self.mouse),
+            glyph=">")
         self._hot.append((cr, "collapse", None))
         g.scrollbar(frame, px, h, self._content_h, self.scroll,
                     step=g.S(imgui.SCROLL_STEP))
@@ -791,8 +824,16 @@ class OverlayUI:
                    g.S(12), h // 2 + g.S(28), (140, 140, 240), 0.5)
         if self.record:
             h, w = frame.shape[:2]
-            off = (self._panel_px + g.S(22)) if self.open else g.S(70)
-            cv2.circle(frame, (w - off, g.S(24)), g.S(7), RED, -1)
+            if self.open:
+                cv2.circle(frame, (w - self._panel_px - g.S(22), g.S(24)),
+                           g.S(7), RED, -1)
+            else:
+                # beside the handle, not on it: the handle is title-safe inset
+                # and 2.75u tall, and at 720p the old (w-70, 24) dot landed
+                # inside it
+                hx0, hy0, _, hy1 = imgui.panel_handle_rect(w, h)
+                cv2.circle(frame, (hx0 - g.S(16), (hy0 + hy1) // 2),
+                           g.S(7), RED, -1)
 
     # ----- mouse -----
     @staticmethod
