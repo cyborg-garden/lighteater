@@ -29,6 +29,8 @@ ParticleFlow. The trail map itself is the picture.
 from __future__ import annotations
 
 import cv2
+import math
+
 import numpy as np
 
 # Behavior points — named parameter sets an agent can run on. Both ends of the
@@ -293,6 +295,130 @@ def relief(lum, total, inv_norm, depth, light):
     lit = np.clip(lum * shade * shadow * cavity * ground, 0.0, 1.0)
     d = np.float32(depth)
     return (lum + (lit - lum) * d).astype(np.float32)
+
+
+
+# ----- fractal veins (GL engine only; see shaders/physarum/update.frag) -----
+# The three trail channels become three SCALES of one organism: trunks (r),
+# veins (g), hair-fine threads (b). Each level is a real Jones population
+# whose sensor distance and stride are the level above's times `scale`
+# (sensor angle times `angle`), coupled so the finer ones hang off the flanks
+# of the coarser ones. Tuned on the browser page (cyborg-garden-site
+# fractal-veins, 2026-09-25) and moved here so ONE table feeds both hosts:
+# looks.json exports it verbatim under fractal.table, keys and all (they are
+# the browser's names). Lengths are grid px at the PX_REF grid.
+# Lives in the engine module, not the mode, because physarum_gl reads it and
+# the mode imports physarum_gl; the per-look amounts are the mode's
+# (LOOK_FRACTAL).
+PX_REF = 576                     # the CPU working grid's width: lengths' unit
+FRACTAL = {
+    "scale": 0.5,                # sense + step per level: each level half the one above
+    "angle": 1.15,               # sensor angle per level: finer levels look wider, so they reticulate
+    "flank": 0.35,               # pull of a finer level toward the coarser flanks
+    "flankAt": 0.12,             # flank bump peak, share of the whole trail's bright end
+    "shun": 0.4,                 # push of a coarser level off denser finer lace
+    "dieback": 0.012,            # per-frame recycle chance of a stranded fine agent
+    "food": [1.0, 0.35, 0.1],    # light-as-food pull per level: threads follow trails, not the glow
+    "roomCull": 0.35,            # fine agents in the room recycle at this share even beside a trunk
+    "bodyFine": 0.7,             # finer levels shrink a further 0.7x per level over the subject
+    "fineMin": [4.0, 0.6],       # floor on a finer level's sensor distance and stride, px at PX_REF
+    "fineMax": [9.0, 4.5],       # ceiling on the veins', threads' sensor distance, px at PX_REF
+    "fineAngle": [0.7, 1.0],     # finer levels: sensor half-angle ceiling (rad), turn floor as a share of it
+    "trunkAngle": [1.0, 0.5],    # the same for the trunks, looser
+    "calm": 0.6,                 # stride multiplier on every level
+    "stride": [0.45, 0.35, 0.3],  # stride ceiling per level, share of that level's sensor distance
+    "density": 1.8,              # agent density multiplier over the stock pool
+    "dep": [1.0, 0.8, 0.7],      # deposit per agent, per level
+    "fineField": [0.55, 0.3],    # deposit of veins, threads in the room (matte 0)
+    "diff": [1.0, 0.7, 0.45],    # box-blur share per level (1 = stock, 0 = none)
+    "sharp": [1.8, 1.4, 1.8],    # lateral inhibition per level
+    "decay": [1.0, 0.7, 0.45],   # per-frame trail loss per level: finer remembers longer
+    "trunkKeep": 0.95,           # and the trunks keep at least this much per frame
+    "val": [1.0, 0.7, 0.62],     # value per level: finer is further back
+    "relief": [1.0, 0.4, 0.15],  # height per level: finer lies flatter
+    "exp": [1.0, 1.1, 1.3],      # exposure per level: thin lines still read
+    "grain": 0,                  # share of the stock sparkle kept on the trunks
+    # drawing (tonemap_fractal.frag fields, compose.frag outlines)
+    "crest": [20, 0.75, 0.75],   # thread ridge gain, share of its ring a vein, a trunk loses
+    "lineGate": 0.12,            # thread value (own bright end) under which a ridge is noise
+    "lineBeta": 0.85,            # a round blob counts this much less than a line
+    "thr": [0.55, 0.45, 0.15],   # where each level's outline is cut, on its field
+    "hair": [0.45, 0.9],         # thread half-width in SCREEN px, faint to strong
+    "body": [0.7, 0.5, 0.6],     # interior floor: the inside of a shape keeps this much of its value
+    "glow": 0.0,                 # underglow outside the outlines
+    "renderPx": 4.2e6,           # pixel budget of the screen-size drawing pass
+    # life: two attention zones bloom in turn, a faint shimmer runs through the lace
+    "bloomPeriod": [44, 53],     # seconds per zone's cycle (rise, hold, relax, move)
+    "bloomRadius": [0.12, 0.22],  # zone radius range, share of the grid's short side
+    "bloomFine": 0.6,            # the finer levels shrink by this much more at full bloom
+    "bloomDep": 0.25,            # and lay this much more
+    "bloomPull": 0.0003,         # per-frame chance a fine agent elsewhere relocates into the stronger zone
+    "bloomThr": 0.35,            # the finer outlines' threshold drops by this share at full bloom
+    "bloomSound": 0.5,           # how far sound (slow envelope) opens the blooms, times sens
+    "shimmer": [0.08, 140],      # amplitude, wavelength (grid px at PX_REF)
+}
+# The rules below the table are host code on the browser, not tuning;
+# looks.json exports them too so neither host retypes a number.
+# compose's u_mix = min(1, amount / FRACTAL_MIX_FULL): small amounts morph
+# out of the stock flat picture.
+FRACTAL_MIX_FULL = 0.5
+# Per-level bright ends from the stats subsample (stats.frag .b/.a): the
+# trunks take the stock rule (percentile pct[0] over every sample); a finer
+# level a percentile pct[1] over the samples it occupies (above occ x its
+# channel max), falling back to the max under min_occ samples; floored at
+# floor x the stock norm (the previous frame's smoothed one); each level is
+# then smoothed frame to frame by `ema`, the stock norm's own NORM_EMA
+# (exported here so the browser does not retype it). Before any readback,
+# level k is split x dep[k] x the stock norm.
+FRACTAL_NL = {"occ": 0.05, "pct": [0.95, 0.6], "min_occ": 8, "floor": 0.02,
+              "split": 0.5, "ema": NORM_EMA}
+# The attention zones' schedule (bloom_zones below): each zone's cycle phase
+# starts at phase0 + i * phase_step; its place, radius and drift direction
+# come from hash(seed) with seed = cycle * seed_n + i * seed_i and
+# hash(n) = fract(sin(n * h[0] + h[1]) * h[2]); centres land in
+# [place[0], place[0] + place[1]] of the grid and drift by drift x (phase -
+# 0.5); sound opens a zone through a sound_ema-per-frame envelope of `amp`.
+BLOOM = {"phase0": 0.25, "phase_step": 0.5, "seed_n": 7, "seed_i": 101,
+         "hash": [127.1, 311.7, 43758.5453], "place": [0.12, 0.76],
+         "drift": 0.10, "sound_ema": 0.02}
+
+
+def _bloom_hash(n):
+    h0, h1, h2 = BLOOM["hash"]
+    x = math.sin(n * h0 + h1) * h2
+    return x - math.floor(x)
+
+
+def bloom_zones(t, gw, gh, amount, snd=0.0, sens=1.0):
+    """The two attention zones as the shaders' `vec4 u_bloom[2]`: a list of
+    two (x, y, radius, strength), centre and radius in grid px, strength
+    0..1. Each zone lives a cycle of FRACTAL["bloomPeriod"][i] seconds: it
+    rises, holds and relaxes on a sin^2 envelope while drifting a little,
+    then, invisible at strength 0, moves to a fresh place drawn from its
+    cycle number. The two are half a cycle apart, so one patch at a time is
+    the one blooming. `snd` is the caller's slow envelope of the audio
+    amplitude (BLOOM["sound_ema"] per frame), `sens` the sound sensitivity.
+    Double precision throughout, like the browser's JS, so both hosts place
+    the zones identically for the same clock."""
+    short = min(gw, gh)
+    out = []
+    lo, hi = FRACTAL["bloomRadius"]
+    p0, pw = BLOOM["place"]
+    for i in range(2):
+        period = FRACTAL["bloomPeriod"][i]
+        u = t / period + i * BLOOM["phase_step"] + BLOOM["phase0"]
+        n = math.floor(u)
+        ph = u - n
+        seed = n * BLOOM["seed_n"] + i * BLOOM["seed_i"]
+        env = math.sin(math.pi * ph) ** 2
+        ang = 6.2831853 * _bloom_hash(seed + 3)
+        drift = BLOOM["drift"] * (ph - 0.5)
+        x = (p0 + pw * _bloom_hash(seed + 1) + drift * math.cos(ang)) * gw
+        y = (p0 + pw * _bloom_hash(seed + 2) + drift * math.sin(ang)) * gh
+        r = short * (lo + (hi - lo) * _bloom_hash(seed + 4))
+        s = min(1.0, env * (1.0 + FRACTAL["bloomSound"] * sens * snd)) * amount
+        out.append((x, y, r, s))
+    return out
 
 
 class PhysarumField:

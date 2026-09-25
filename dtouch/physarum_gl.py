@@ -40,6 +40,17 @@ percentile is estimated on a stride-4 subsample; reseeding is per-agent
 Bernoulli(reseed_frac) with rejection sampling against matte*luma instead of
 a CDF draw. None of these is visible on the instrument.
 
+**Fractal veins** (`fractal` > 0, GL only): the three trail channels become
+three scales of one organism (trunks, veins, threads) in the same update /
+deposit / blur / stats passes, each gated on `u_fractal` so amount 0 runs
+the stock arithmetic bit for bit. The picture then takes two different
+passes: tonemap_fractal.frag writes per-level fields at grid size (two
+targets), and compose.frag cuts their outlines at OUTPUT size (`out_size`,
+capped at FRACTAL["renderPx"] pixels), so a thread stays a hairline however
+far the grid is stretched. `luminance()` then returns that output-size
+picture. The pool is allocated at fractal_density x n (FRACTAL["density"]
+unless the host caps it); the amount decides how much of it runs.
+
 Clean-room note: the model is Jeff Jones's (sense/rotate/move/deposit/
 diffuse/decay) and the semantics are this repo's dtouch/physarum.py. No code
 or parameter tables from any CC BY-NC-SA physarum project were used.
@@ -51,9 +62,9 @@ import os
 
 import numpy as np
 
-from .physarum import (BALLISTIC_DECAY, NORM_EMA, POINTS, RELIEF_LIGHT,
-                       SPATIAL_REGIMES, ZONE_REGIME_COUNT, relief_light,
-                       species_matrix)
+from .physarum import (BALLISTIC_DECAY, FRACTAL, FRACTAL_MIX_FULL, FRACTAL_NL,
+                       NORM_EMA, POINTS, PX_REF, RELIEF_LIGHT, SPATIAL_REGIMES,
+                       ZONE_REGIME_COUNT, relief_light, species_matrix)
 
 # Agent texture width. One texel per agent; the height is ceil(n / width).
 # 2048 x 16384 (the GL_MAX_TEXTURE_SIZE floor on anything that runs this)
@@ -67,7 +78,8 @@ STATS_STRIDE = 4
 SHADERS_ROOT = os.path.join(os.path.dirname(__file__), "shaders")
 SHADER_DIR = os.path.join(SHADERS_ROOT, "physarum")
 SHADER_FILES = ("fullscreen.vert", "update.frag", "deposit.vert", "deposit.frag",
-                "blur.frag", "stats.frag", "tonemap.frag", "impulse.frag")
+                "blur.frag", "stats.frag", "tonemap.frag", "impulse.frag",
+                "tonemap_fractal.frag", "compose.frag")
 
 # What moderngl gets in front of every file. The browser prepends its own
 # `#version 300 es` + precision lines; the files carry neither.
@@ -87,6 +99,54 @@ def load_shared_shader(unit, name, version_line=GLSL_VERSION_LINE):
 def load_shader(name, version_line=GLSL_VERSION_LINE):
     """Source of `dtouch/shaders/physarum/<name>` (see load_shared_shader)."""
     return load_shared_shader("physarum", name, version_line)
+
+
+NO_BLOOM = ((0.0, 0.0, 1.0, 0.0), (0.0, 0.0, 1.0, 0.0))
+
+
+def fractal_render_size(gw, gh, out_w, out_h, budget=FRACTAL["renderPx"]):
+    """Size of the fractal drawing pass: the output, scaled down to the pixel
+    budget, never below the grid. Rounds half up, like the browser's
+    Math.round."""
+    k = min(1.0, math.sqrt(budget / max(1, out_w * out_h)))
+    return (max(gw, int(math.floor(out_w * k + 0.5))),
+            max(gh, int(math.floor(out_h * k + 0.5))))
+
+
+def level_norms(stats, norm, prev=None, ema=FRACTAL_NL["ema"]):
+    """Per-level bright ends (trunks, veins, threads) from the fractal stats
+    subsample (stats.frag with u_fractal > 0: .r total, .b veins, .a
+    threads). The trunks take the stock rule (a high percentile over every
+    sample), so they burn as bright as today's veins; a finer level is sparse,
+    so a plain percentile lands on empty ground: it takes a percentile over
+    the samples it actually occupies. Floored against the stock `norm`, and
+    smoothed against `prev` like the stock norm is (FRACTAL_NL)."""
+    s = np.asarray(stats, np.float32).reshape(-1, 4)
+    tot, g, b = s[:, 0], s[:, 2], s[:, 3]
+    lv = (np.maximum(tot - g - b, 0.0), g, b)
+    floor = max(1e-4, (norm if norm > 0 else 1.0) * FRACTAL_NL["floor"])
+    out = []
+    for k, a in enumerate(lv):
+        # Order statistics by np.partition, not a full sort: the same element
+        # of the same array (a sort-then-index, bit for bit), at a fraction
+        # of the cost; the sort was 1.4 / 3.4 / 6.4 ms of CPU per frame at
+        # the perform / balance / quality stats sizes, inside the frame's
+        # GPU wait.
+        mx = float(a.max())
+        if k > 0:
+            # the occupied samples: strictly above occ x the max, compared in
+            # double like the searchsorted it replaces
+            a = a[a > np.float64(FRACTAL_NL["occ"] * mx)]
+        occ = a.size
+        pct = FRACTAL_NL["pct"][0 if k == 0 else 1]
+        if occ > FRACTAL_NL["min_occ"]:
+            i = int(math.floor(occ * pct))
+            v = float(np.partition(a, i)[i])
+        else:
+            v = mx
+        want = max(floor, v if math.isfinite(v) else floor)
+        out.append(want if prev is None else prev[k] * ema + want * (1.0 - ema))
+    return tuple(out)
 
 
 class PhysarumGLUnavailable(RuntimeError):
@@ -118,7 +178,8 @@ class PhysarumFieldGL:
                  point_bg="veins", point_fg="fingers",
                  decay=0.94, diffuse=1, food=0.35, exposure=3.5,
                  grain=0.2, reseed_frac=0.004, gain=1.0,
-                 sat=0.0, jitter=0.0, hetero=0.0, species=3, cross=0.0):
+                 sat=0.0, jitter=0.0, hetero=0.0, species=3, cross=0.0,
+                 fractal_density=None):
         if n <= 0:
             raise ValueError(f"n must be > 0, got {n}")
         if gw <= 0 or gh <= 0:
@@ -157,14 +218,38 @@ class PhysarumFieldGL:
         self.mod_spread = 1.0
         self.mod_step = 1.0
         self.mod_deposit = 1.0
+        # fractal veins: the amount (0 = the stock engine, bit for bit),
+        # the output size the compose pass draws at (None = the grid), the
+        # length unit (grid px per PX_REF px; the mode sets its own), the
+        # two attention zones (dtouch.physarum.bloom_zones; the mode drives
+        # them) and the shimmer clock
+        self.fractal = 0.0
+        self.out_size = None
+        self.px_scale = gw / float(PX_REF)
+        self.bloom = NO_BLOOM
+        self.bloom_t = 0.0
+        self.fractal_error = None  # set when the fractal passes cannot build
+        self._nl = None            # per-level bright ends (level_norms)
+        self._stats_pbo = None     # fractal stats, read a frame late (_stats_late)
+        self._stats_pending = False
         self.seed = seed
         self.frame = 0
         self._last_norm = 0.0     # last luminance() percentile (sat cap ref)
         self.ctx = None
         self._rng = np.random.default_rng(seed)
         self._salt = np.random.default_rng(seed + 1)
-        self.aw = min(n, AGENT_TEX_W)
-        self.ah = int(math.ceil(n / self.aw))
+        # the pool: n agents for the stock engine, up to fractal_density x n
+        # as the fractal amount rises (the thin finer levels fill the dark
+        # between trunks instead of saturating it). FRACTAL["density"] unless
+        # the host caps it (the mode does per quality tier, to hold the
+        # frame budget: PhysarumMode.FRACTAL_DENSITY_TIER)
+        self.fractal_density = float(FRACTAL["density"] if fractal_density is None
+                                     else fractal_density)
+        if self.fractal_density < 1.0:
+            raise ValueError(f"fractal_density must be >= 1, got {fractal_density}")
+        self.n_cap = max(n, int(math.ceil(n * self.fractal_density)))
+        self.aw = min(self.n_cap, AGENT_TEX_W)
+        self.ah = int(math.ceil(self.n_cap / self.aw))
         try:
             self._build()
         except Exception as e:                          # noqa: BLE001
@@ -213,8 +298,23 @@ class PhysarumFieldGL:
         init[:self.n, 2] = rng.uniform(0, 2 * np.pi, self.n)
         # .w is the species, drawn once at spawn and carried for life
         init[:self.n, 3] = rng.integers(0, self.species, self.n)
+        # the fractal's extra agents come from their own stream, so the first
+        # n (all the stock engine ever runs) are what they always were
+        extra = self.n_cap - self.n
+        if extra > 0:
+            r2 = np.random.default_rng(self.seed + 2)
+            init[self.n:self.n_cap, 0] = r2.uniform(0, gw, extra)
+            init[self.n:self.n_cap, 1] = r2.uniform(0, gh, extra)
+            init[self.n:self.n_cap, 2] = r2.uniform(0, 2 * np.pi, extra)
+            init[self.n:self.n_cap, 3] = r2.integers(0, self.species, extra)
         self.tex_agents_a = ftex((aw, ah), 4, init.tobytes())
-        self.tex_agents_b = ftex((aw, ah), 4)
+        # B starts as the same pool, not an empty texture: update() writes
+        # only the running rows, so a parked row holds whatever its texture
+        # last held, and the fractal amount can wake it on a frame when B is
+        # the current side. Left uninitialised, B's parked rows were zeros:
+        # the woken pool ran from the origin as species 0 (trunks) for life
+        # (measured: 97% of the extra pool, not a third).
+        self.tex_agents_b = ftex((aw, ah), 4, init.tobytes())
         self.fbo_agents_a = ctx.framebuffer(color_attachments=[self.tex_agents_a])
         self.fbo_agents_b = ctx.framebuffer(color_attachments=[self.tex_agents_b])
 
@@ -242,7 +342,9 @@ class PhysarumFieldGL:
 
         self.sw = int(math.ceil(gw / STATS_STRIDE))
         self.sh = int(math.ceil(gh / STATS_STRIDE))
-        self.tex_stats = ftex((self.sw, self.sh), 2)
+        # RGBA: the fractal stats carry the finer levels in .b/.a; the stock
+        # readback takes only .rg of it
+        self.tex_stats = ftex((self.sw, self.sh), 4)
         self.fbo_stats = ctx.framebuffer(color_attachments=[self.tex_stats])
         self.tex_lum = ctx.texture((gw, gh), 1)             # uint8 readback target
         self.fbo_lum = ctx.framebuffer(color_attachments=[self.tex_lum])
@@ -274,6 +376,14 @@ class PhysarumFieldGL:
         self.p_tonemap["u_trail"].value = 0
         self.p_tonemap["u_laid"].value = 1
         self.p_impulse["u_agents"].value = 0
+        # the stock engine never reads these; set once so a first fractal
+        # frame never runs on GL defaults
+        for p in (self.p_update, self.p_deposit, self.p_blur, self.p_stats):
+            p["u_fractal"].value = 0.0
+        self._pf = None           # the fractal-only programs, built on first use
+        self.tex_fields = self.fbo_fields = None
+        self.tex_lum_hi = self.fbo_lum_hi = None
+        self.lum_tex = self.tex_lum     # what luminance_into_tex last drew
 
         # a render pass to prove float targets + blending actually work here
         # (a context can exist and still refuse them); a failure surfaces as
@@ -281,6 +391,69 @@ class PhysarumFieldGL:
         self._deposit(1.0, 1.0)
         self.fbo_laid.use()
         ctx.clear(0.0, 0.0, 0.0, 1.0)
+
+    # ----- fractal veins -----
+    def _fractal_amount(self):
+        """The amount this frame runs at, 0..1. A context that cannot build
+        the fractal-only passes runs the stock engine (amount 0) instead of a
+        dead picture; the reason is kept in fractal_error."""
+        a = min(max(float(self.fractal), 0.0), 1.0)
+        if a <= 0.0 or self.fractal_error is not None:
+            return 0.0
+        if self._pf is None:
+            try:
+                self._build_fractal()
+            except Exception as e:                  # noqa: BLE001 — §6.4
+                self.fractal_error = str(e)
+                print("fractal veins unavailable:", e)
+                return 0.0
+        return a
+
+    def _build_fractal(self):
+        ctx, gl = self.ctx, self._gl
+        fs_vs = load_shader("fullscreen.vert")
+        pt = ctx.program(vertex_shader=fs_vs, fragment_shader=load_shader("tonemap_fractal.frag"))
+        pc = ctx.program(vertex_shader=fs_vs, fragment_shader=load_shader("compose.frag"))
+        self._pf = {"tonemap": pt, "compose": pc,
+                    "vao_tonemap": ctx.vertex_array(pt, [(self.tri_vbo, "2f", "in_vert")]),
+                    "vao_compose": ctx.vertex_array(pc, [(self.tri_vbo, "2f", "in_vert")])}
+        pt["u_trail"].value, pt["u_laid"].value = 0, 1
+        pc["u_fields"].value, pc["u_stock"].value, pc["u_line"].value = 0, 1, 3
+        # two grid-size RGBA16F targets: the per-level fields (sampled
+        # LINEAR by compose, the way distance-field text is) and the thread
+        # centreline (offset, direction; sampled by texel)
+        f0 = ctx.texture((self.gw, self.gh), 4, dtype="f2")
+        f1 = ctx.texture((self.gw, self.gh), 4, dtype="f2")
+        f0.filter = (gl.LINEAR, gl.LINEAR)
+        f1.filter = (gl.NEAREST, gl.NEAREST)
+        for t in (f0, f1):
+            t.repeat_x = t.repeat_y = False
+        self.tex_fields = (f0, f1)
+        self.fbo_fields = ctx.framebuffer(color_attachments=[f0, f1])
+
+    def render_size(self):
+        """(w, h) of the picture luminance()/lum_tex carry next: the grid
+        for the stock engine, the output size (within the fractal pixel
+        budget) while the fractal amount is up."""
+        a = min(max(float(self.fractal), 0.0), 1.0)
+        if a <= 0.0 or self.fractal_error is not None:
+            return (self.gw, self.gh)
+        ow, oh = self.out_size or (self.gw, self.gh)
+        return fractal_render_size(self.gw, self.gh, int(ow), int(oh))
+
+    def n_active(self, amount=None):
+        """Agents stepped and deposited this frame: n for the stock engine,
+        up to fractal_density x n as the fractal amount rises."""
+        a = self._fractal_amount() if amount is None else amount
+        if a <= 0.0:
+            return self.n
+        k = 1.0 + (self.fractal_density - 1.0) * a
+        return max(1, min(self.n_cap, int(math.floor(self.n * k + 0.5))))
+
+    def _bloom_flat(self):
+        """u_bloom as 2 vec4s. Strength already carries the amount
+        (bloom_zones, on the mode's side); a field driven directly has none."""
+        return [tuple(float(v) for v in z) for z in self.bloom]
 
     def _salt_value(self):
         return int(self._salt.integers(0, 2**32, dtype=np.uint32))
@@ -309,7 +482,7 @@ class PhysarumFieldGL:
         self.point_bg, self.point_fg = self.point_fg, self.point_bg
 
     # ----- passes -----
-    def _deposit(self, dep_bg, dep_fg):
+    def _deposit(self, dep_bg, dep_fg, fa=0.0):
         ctx, gl = self.ctx, self._gl
         self.fbo_laid.use()
         ctx.clear(0.0, 0.0, 0.0, 1.0)
@@ -317,18 +490,41 @@ class PhysarumFieldGL:
         ctx.blend_func = (gl.ONE, gl.ONE)
         self.tex_agents_a.use(0)
         self.tex_matte.use(2)
-        self.p_deposit["u_deposit"].value = (dep_bg, dep_fg)
-        self.p_deposit["u_nspec"].value = float(self.species)
-        self.vao_deposit.render(gl.POINTS, vertices=self.n)
+        p = self.p_deposit
+        p["u_deposit"].value = (dep_bg, dep_fg)
+        p["u_nspec"].value = float(self.species)
+        p["u_fractal"].value = float(fa)
+        if fa > 0.0:
+            def m(v):
+                return 1.0 + (v - 1.0) * fa
+            p["u_lvlDep"].value = tuple(m(v) for v in FRACTAL["dep"])
+            p["u_fineField"].value = tuple(m(v) for v in FRACTAL["fineField"])
+            p["u_bloom"].value = self._bloom_flat()
+            p["u_bloomDep"].value = float(FRACTAL["bloomDep"])
+        self.vao_deposit.render(gl.POINTS, vertices=self.n_active(fa))
         ctx.disable(gl.BLEND)
 
-    def _blur_decay(self, use_keep=False):
+    def _blur_decay(self, use_keep=False, fa=0.0):
         ctx, gl = self.ctx, self._gl
         r = int(self.diffuse) if self.diffuse > 0 else 0
         k = 2 * r + 1
         p = self.p_blur
         p["u_radius"].value = r
         p["u_wide"].value = max(3 * r, r + 2)
+        p["u_fractal"].value = float(fa)
+        if fa > 0.0:
+            # per-level diffusion, inhibition and loss, eased in by the
+            # amount (all ones is the stock arithmetic); the trunks remember
+            # at least FRACTAL["trunkKeep"] per frame (a short memory leaves
+            # a fast point's trunk stippled, and it frays at its outline)
+            def m3(key):
+                return [1.0 + (v - 1.0) * fa for v in FRACTAL[key]]
+            p["u_diffC"].value = tuple(m3("diff"))
+            p["u_sharpC"].value = tuple(m3("sharp"))
+            dc = m3("decay")
+            keep = min(1.0, (1.0 - FRACTAL["trunkKeep"]) / max(1e-3, 1.0 - float(self.decay)))
+            dc[0] *= 1.0 + (keep - 1.0) * fa
+            decay_c = tuple(dc)
         # H: trail + laid -> tmp
         self.fbo_tmp.use()
         self.tex_trail_a.use(0)
@@ -346,6 +542,8 @@ class PhysarumFieldGL:
         p["u_sharpen"].value = max(float(self.sharpen), 0.0) * 0.5
         p["u_dir"].value = (1, 0)
         p["u_scale"].value = 1.0 / k
+        if fa > 0.0:
+            p["u_decayC"].value = (1.0, 1.0, 1.0)     # the H pass does not decay
         self.vao_blur.render(gl.TRIANGLES, vertices=3)
         # V: tmp -> trail_b, times decay (per-pixel when a keep map rode in)
         self.fbo_trail_b.use()
@@ -357,6 +555,8 @@ class PhysarumFieldGL:
         p["u_decay"].value = float(self.decay)
         p["u_dir"].value = (0, 1)
         p["u_scale"].value = 1.0 / k
+        if fa > 0.0:
+            p["u_decayC"].value = decay_c
         self.vao_blur.render(gl.TRIANGLES, vertices=3)
         self.tex_trail_a, self.tex_trail_b = self.tex_trail_b, self.tex_trail_a
         self.fbo_trail_a, self.fbo_trail_b = self.fbo_trail_b, self.fbo_trail_a
@@ -427,7 +627,18 @@ class PhysarumFieldGL:
             # ~0.55 s at 60 fps, then steering is fully back
             self.ballistic *= BALLISTIC_DECAY
             p["u_time"].value = self.frame * (1.0 / 60.0)
+            fa = self._fractal_amount()
+            p["u_fractal"].value = fa
+            if fa > 0.0:
+                self._update_fractal_uniforms(p, fa)
+            else:
+                self._nl = None           # measured afresh when it returns
 
+            # only the rows that hold running agents (the rest of the pool
+            # waits for a higher fractal amount); the stock engine's rows are
+            # exactly the texture it always had
+            rows = int(math.ceil(self.n_active(fa) / self.aw))
+            self.fbo_agents_b.viewport = (0, 0, self.aw, rows)
             self.fbo_agents_b.use()
             self.tex_agents_a.use(0)
             self.tex_trail_a.use(1)
@@ -437,9 +648,32 @@ class PhysarumFieldGL:
             self._swap_agents()
 
             md = self.mod_deposit
-            self._deposit(a["deposit"] * md, b["deposit"] * md)
-            self._blur_decay(use_keep=keep is not None)
+            self._deposit(a["deposit"] * md, b["deposit"] * md, fa)
+            self._blur_decay(use_keep=keep is not None, fa=fa)
         self.frame += 1
+
+    def _update_fractal_uniforms(self, p, fa):
+        F = FRACTAL
+        norm = max(self._food_norm(), 1e-4)
+        px = float(self.px_scale)
+        p["u_lvlScale"].value = (F["scale"], F["angle"], 1.0)
+        p["u_inv_norm"].value = 1.0 / norm
+        p["u_flank"].value = F["flank"]
+        p["u_flankAt"].value = F["flankAt"] * norm
+        p["u_shun"].value = F["shun"] * fa
+        p["u_dieback"].value = F["dieback"] * fa
+        p["u_bodyFine"].value = 1.0 + (F["bodyFine"] - 1.0) * fa
+        p["u_roomCull"].value = F["roomCull"]
+        p["u_fineMin"].value = (F["fineMin"][0] * px * fa, F["fineMin"][1] * px * fa)
+        p["u_fineMax"].value = (F["fineMax"][0] * px, F["fineMax"][1] * px)
+        p["u_strideK"].value = tuple(F["stride"])
+        p["u_calm"].value = F["calm"]
+        p["u_fineAngle"].value = tuple(F["fineAngle"])
+        p["u_trunkAngle"].value = tuple(F["trunkAngle"])
+        p["u_bloom"].value = self._bloom_flat()
+        p["u_bloomFine"].value = F["bloomFine"]
+        p["u_bloomPull"].value = F["bloomPull"] * fa
+        p["u_lvlFood"].value = tuple(1.0 + (v - 1.0) * fa for v in F["food"])
 
     # ----- interactions -----
     def _impulse(self, mode, x, y, frac=0.0, radius=0.0):
@@ -451,6 +685,9 @@ class PhysarumFieldGL:
             p["u_frac"].value = float(frac)
             p["u_radius"].value = float(radius)
             p["u_salt"].value = self._salt_value()
+            # the whole pool (update() narrows the viewport to the running
+            # rows; an impulse moves every agent, parked ones included)
+            self.fbo_agents_b.viewport = (0, 0, self.aw, self.ah)
             self.fbo_agents_b.use()
             self.tex_agents_a.use(0)
             self.vao_impulse.render(gl.TRIANGLES, vertices=3)
@@ -483,18 +720,50 @@ class PhysarumFieldGL:
         self._impulse(3, x, y, frac, radius)
 
     # ----- picture -----
-    def _stats(self):
+    def _stats(self, fa=0.0):
         """(95th percentile of the trail, mean of this frame's deposits),
-        estimated on a stride-STATS_STRIDE subsample read back as floats."""
+        estimated on a stride-STATS_STRIDE subsample read back as floats.
+        With the fractal amount up the readback also carries the finer
+        levels (.b, .a) for level_norms, kept in self._last_stats4, and is
+        the previous frame's (_stats_late)."""
         gl = self._gl
+        self.p_stats["u_fractal"].value = float(fa)
         self.fbo_stats.use()
         self.tex_trail_a.use(0)
         self.tex_laid.use(1)
         self.vao_stats.render(gl.TRIANGLES, vertices=3)
-        raw = self.fbo_stats.read(components=2, dtype="f4")
-        s = np.frombuffer(raw, np.float32).reshape(self.sh, self.sw, 2)
+        comps = 4 if fa > 0.0 else 2
+        if fa > 0.0:
+            raw = self._stats_late()
+        else:
+            self._stats_pending = False
+            raw = self.fbo_stats.read(components=comps, dtype="f4")
+        s4 = np.frombuffer(raw, np.float32).reshape(self.sh, self.sw, comps)
+        self._last_stats4 = s4 if fa > 0.0 else None
+        s = s4[..., :2]
         self._last_stats = s        # free spatial subsample (lum_sample)
         return float(np.percentile(s[..., 0], 95.0)), float(s[..., 1].mean())
+
+    def _stats_late(self):
+        """The fractal stats, read a frame late. The stats pass just drawn
+        is copied into a pixel-pack buffer without waiting for it (the GPU
+        finishes it in the background), and the copy the previous frame
+        queued is what this frame uses: that frame's picture readback has
+        already drained the queue, so it is ready and costs no stall. A
+        synchronous glReadPixels here was the fractal frame's first GPU
+        sync. The browser reads its stats every 6th frame; one frame of lag
+        under the 0.9 EMA on every bright end is not visible. The first
+        fractal frame (from the stock engine, or after a stock frame) has
+        nothing queued and reads synchronously. The stock engine keeps its
+        same-frame read (amount 0 is the pre-fractal engine, bit for bit)."""
+        prev = self._stats_pbo.read() if self._stats_pending else None
+        if self._stats_pbo is None:
+            self._stats_pbo = self.ctx.buffer(reserve=self.sw * self.sh * 16)
+        self.fbo_stats.read_into(self._stats_pbo, components=4, dtype="f4")
+        self._stats_pending = True
+        if prev is None:
+            prev = self.fbo_stats.read(components=4, dtype="f4")
+        return prev
 
     def lum_sample(self):
         """Tonemapped luminance on the stats subsample grid, (sh, sw)
@@ -523,7 +792,9 @@ class PhysarumFieldGL:
         outer scope's restore and hand a later foreign context our GL
         calls (the test_field_survives_a_foreign_context failure mode)."""
         gl = self._gl
-        norm, lmean = self._stats()
+        fa = self._fractal_amount()
+        prev_norm = self._last_norm
+        norm, lmean = self._stats(fa)
         # Smooth the exposure reference. A raw per-frame p95 renormalizes the
         # picture against its own noise every frame, which reads as a slow
         # pump and costs the image its crispness (the browser port already
@@ -533,10 +804,32 @@ class PhysarumFieldGL:
             norm = self._last_norm * NORM_EMA + norm * (1.0 - NORM_EMA)
         self._last_norm = norm      # feedback for the `sat` + `food` scales
         if norm <= 0:
-            self.fbo_lum.use()
+            # black, at the size render_size() promised the caller
+            if fa > 0.0:
+                self._lum_hi_target()
+                self.lum_tex = self.tex_lum_hi
+                self.fbo_lum_hi.use()
+            else:
+                self.lum_tex = self.tex_lum
+                self.fbo_lum.use()
             self.ctx.clear(0.0, 0.0, 0.0, 1.0)
             return False
         gnorm = lmean * 4.0
+        if fa > 0.0:
+            if min(1.0, fa / FRACTAL_MIX_FULL) < 1.0:
+                # compose morphs out of the stock picture at small amounts:
+                # draw it first, relief and all, into tex_lum
+                self._stock_picture(norm, gnorm)
+            self._fractal_picture(fa, norm, gnorm, prev_norm)
+            return True
+        self.lum_tex = self.tex_lum
+        self._stock_picture(norm, gnorm)
+        return True
+
+    def _stock_picture(self, norm, gnorm):
+        """tonemap.frag into tex_lum (grid size). The caller holds the
+        context."""
+        gl = self._gl
         p = self.p_tonemap
         p["u_inv_norm"].value = 1.0 / norm
         p["u_grain"].value = float(self.grain) if gnorm > 0 else 0.0
@@ -550,19 +843,97 @@ class PhysarumFieldGL:
         self.tex_trail_a.use(0)
         self.tex_laid.use(1)
         self.vao_tonemap.render(gl.TRIANGLES, vertices=3)
-        return True
+
+    def _fractal_picture(self, fa, norm, gnorm, prev_norm):
+        """The fractal amount's picture: per-level fields at grid size
+        (tonemap_fractal.frag, two targets), then outlines cut at the output
+        size (compose.frag) into tex_lum_hi, which becomes lum_tex. The
+        caller holds the context."""
+        gl, F = self._gl, FRACTAL
+        if self._last_stats4 is not None:
+            self._nl = level_norms(self._last_stats4, prev_norm, self._nl)
+        if self._nl is None:
+            # no readback yet: split the total bright end by deposit share
+            self._nl = tuple(max(1e-4, norm * d * FRACTAL_NL["split"]) for d in F["dep"])
+        pt = self._pf["tonemap"]
+        grain = float(self.grain) if gnorm > 0 else 0.0
+        pt["u_inv_norm"].value = 1.0 / norm
+        pt["u_grain"].value = grain
+        pt["u_inv_gnorm"].value = (1.0 / gnorm) if gnorm > 0 else 0.0
+        pt["u_exposure"].value = float(self.exposure)
+        pt["u_depth"].value = float(self.depth)
+        pt["u_light"].value = relief_light(self.light)
+        pt["u_inv_nl"].value = tuple(1.0 / v for v in self._nl)
+        pt["u_lvlRelief"].value = tuple(F["relief"])
+        pt["u_lvlExp"].value = tuple(F["exp"])
+        pt["u_grainK"].value = 1.0 + (F["grain"] - 1.0) * fa
+        pt["u_crest"].value = tuple(F["crest"])
+        pt["u_lineBeta"].value = F["lineBeta"]
+        pt["u_lineGate"].value = F["lineGate"]
+        self.fbo_fields.use()
+        self.tex_trail_a.use(0)
+        self.tex_laid.use(1)
+        self._pf["vao_tonemap"].render(gl.TRIANGLES, vertices=3)
+
+        rw, rh = self._lum_hi_target()
+        pc = self._pf["compose"]
+        pc["u_outSize"].value = (float(rw), float(rh))
+        pc["u_grid"].value = (self.gw, self.gh)
+        pc["u_mix"].value = min(1.0, fa / FRACTAL_MIX_FULL)
+        pc["u_lvlVal"].value = tuple(F["val"])
+        pc["u_thr"].value = tuple(F["thr"])
+        pc["u_body"].value = tuple(F["body"])
+        pc["u_hair"].value = tuple(F["hair"])
+        pc["u_glow"].value = F["glow"]
+        pc["u_bloom"].value = self._bloom_flat()
+        pc["u_bloomThr"].value = F["bloomThr"]
+        pc["u_shimmer"].value = (F["shimmer"][0] * fa, F["shimmer"][1] * float(self.px_scale),
+                                 float(self.bloom_t))
+        self.fbo_lum_hi.use()
+        self.tex_fields[0].use(0)
+        self.tex_lum.use(1)       # the stock picture (read when u_mix < 1)
+        self.tex_fields[1].use(3)
+        self._pf["vao_compose"].render(gl.TRIANGLES, vertices=3)
+        self.lum_tex = self.tex_lum_hi
+
+    def _lum_hi_target(self):
+        """The output-size R8 target of the compose pass, (re)allocated when
+        render_size() changes; returns that size."""
+        rw, rh = self.render_size()
+        if self.tex_lum_hi is None or self.tex_lum_hi.size != (rw, rh):
+            if self.tex_lum_hi is not None:
+                self.fbo_lum_hi.release()
+                self.tex_lum_hi.release()
+            # R8 like tex_lum: the picture is a [0,1] luminance, and the
+            # desktop quantizes it to a LUT index anyway
+            self.tex_lum_hi = self.ctx.texture((rw, rh), 1)
+            self.fbo_lum_hi = self.ctx.framebuffer(color_attachments=[self.tex_lum_hi])
+        return rw, rh
+
+    def luminance_u8(self):
+        """luminance() as the 8-bit values the GPU wrote, (h, w) uint8, no
+        float round trip. The mode's colorize wants exactly these bytes
+        (uint8 -> x/255 float32 -> x*255 -> uint8 is the identity on all 256
+        values), and at the fractal's output size the round trip alone was
+        ~2.5 ms of CPU per frame."""
+        with self.ctx:
+            ok = self.luminance_into_tex()
+            t = self.lum_tex
+            w, h = t.size
+            out = np.zeros((h, w), np.uint8)
+            if ok:
+                fbo = self.fbo_lum if t is self.tex_lum else self.fbo_lum_hi
+                fbo.read_into(out, components=1)
+        return out
 
     def luminance(self):
-        """Tonemapped trail in [0,1] float32 (gh, gw) — same curve as the CPU
-        field (trail normalized by its 95th percentile, `grain` mixing this
-        frame's raw deposits over it, 1 - exp(-exposure * x)), evaluated on
-        the GPU and read back as 8-bit."""
-        with self.ctx:
-            if not self.luminance_into_tex():
-                return np.zeros((self.gh, self.gw), np.float32)
-            raw = self.fbo_lum.read(components=1)
-        lum = np.frombuffer(raw, np.uint8).reshape(self.gh, self.gw)
-        return lum.astype(np.float32) * np.float32(1.0 / 255.0)
+        """Tonemapped trail in [0,1] float32 — same curve as the CPU field
+        (trail normalized by its 95th percentile, `grain` mixing this frame's
+        raw deposits over it, 1 - exp(-exposure * x)), evaluated on the GPU
+        and read back as 8-bit. (gh, gw) for the stock engine; with the
+        fractal amount up it is the compose pass's output-size picture,
+        render_size() reversed as (h, w)."""
+        return self.luminance_u8().astype(np.float32) * np.float32(1.0 / 255.0)
 
     # ----- readbacks (slow; tests and diagnostics) -----
     def _read_f4(self, fbo, components):

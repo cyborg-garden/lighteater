@@ -9,30 +9,6 @@
 //
 // The trail carries THREE species channels (rgb); u_matte and u_gray are
 // still .r only.
-//
-// Fractal veins (u_fractal > 0; 0 is the stock step above, bit for bit —
-// every fractal term sits behind a `u_fractal > 0.0` branch, and
-// tests/test_physarum_fractal.py holds this against a frozen copy of the
-// pre-fractal shader). The three channels stop being three rival species
-// and become three SCALES of one organism: level 0 (r) trunks, level 1 (g)
-// veins, level 2 (b) threads. An agent's level IS its species (.w). Each
-// level runs the same Jones step with its sensor distance and stride scaled
-// by u_lvlScale.x^level (sensor angle by .y), and reads the trail through
-// the stock rock-paper-scissors row with the coarser terms swapped, by
-// u_fractal, for a flank coupling:
-//   - a finer level is drawn to the FLANKS of the coarser trail (a bump that
-//     peaks at a fraction of the coarse bright end and falls off on the
-//     centreline), so threads sprout from and hug trunks and lace the gaps;
-//   - a coarser level is mildly repelled by dense finer lace (u_shun);
-//   - a fine agent standing in empty dark field (no coarse trail, no matte)
-//     dies back and reseeds on the subject or beside a trunk; in the room
-//     (matte 0) it pays u_roomCull of that rate even beside a trunk, and
-//     over the subject the finer levels shrink further (u_bodyFine): the
-//     lace is densest and finest on the person, the room keeps its trunks;
-//   - light stays food, at a smaller share down the ladder (u_lvlFood);
-//   - two travelling attention zones (u_bloom) shrink the finer levels
-//     further, spare them from die-back and pull a trickle of fine agents in.
-// Tuning lives in dtouch.physarum.FRACTAL (exported to looks.json).
 
 uniform sampler2D u_agents;
 uniform sampler2D u_trail;
@@ -61,27 +37,6 @@ uniform float u_ballistic; // 0..1 steering suppression (the wave's shockwave)
 uniform float u_time;      // seconds, drives the zones' slow drift
 uniform vec4 u_zreg[6];    // per-zone-regime multipliers: sense, turn, spread, step
 uniform float u_zcross[6]; // per-zone-regime multiplier on u_cross
-// fractal veins — read only when u_fractal > 0 (a host that never sets them
-// runs the stock step)
-uniform float u_fractal;   // 0..1 how far the scales are pulled apart; 0 = stock
-uniform vec3 u_lvlScale;   // x = per-level sense/step ratio, y = per-level spread ratio (at amount 1)
-uniform float u_inv_norm;  // 1 / the whole trail's bright end (stock norm)
-uniform float u_flank;     // how hard a finer level is pulled to the coarser trail's flanks
-uniform float u_flankAt;   // where the flank bump peaks, trail units
-uniform float u_shun;      // how hard a coarser level is pushed off denser finer lace
-uniform float u_dieback;   // per-frame probability a stranded fine agent reseeds
-uniform vec3 u_lvlFood;    // per-level share of the light-as-food pull
-uniform float u_roomCull;  // share of u_dieback a fine agent in the room (matte 0) pays even beside a trunk
-uniform vec2 u_fineMin;    // floor on a finer level's (sensor distance, stride), grid px
-uniform vec2 u_fineMax;    // ceiling on level 1, level 2 sensor distance, grid px (blended in by u_fractal)
-uniform vec2 u_fineAngle;  // finer levels: ceiling on sensor half-angle (rad), floor on turn as a share of it
-uniform vec2 u_trunkAngle; // the same pair for the trunks, looser
-uniform float u_calm;      // stride multiplier on every level (blended in by u_fractal)
-uniform vec3 u_strideK;    // per-level ceiling on stride as a share of sensor distance (blended in by u_fractal)
-uniform vec4 u_bloom[2];   // attention zones: centre (grid px), radius (grid px), strength 0..1
-uniform float u_bloomFine; // extra shrink of the finer levels at full bloom
-uniform float u_bloomPull; // per-frame chance a fine agent outside a bloom relocates into it
-uniform float u_bodyFine;  // extra shrink of the finer levels over the subject (matte 1)
 
 layout(location = 0) out vec4 f_agent;
 
@@ -220,162 +175,6 @@ float food(vec2 p, int sp, float repel) {
     return t + u_food * texelFetch(u_gray, cell(p), 0).r;
 }
 
-// ---- fractal veins (u_fractal > 0 only) -----------------------------------
-
-// How strongly the travelling attention zones touch p (0..1). The zones
-// wrap with the torus, like the agents.
-float bloomAt(vec2 p) {
-    vec2 g = vec2(u_grid);
-    float b = 0.0;
-    for (int i = 0; i < 2; i++) {
-        vec2 d = abs(p - u_bloom[i].xy);
-        d = min(d, g - d);
-        float r = max(u_bloom[i].z, 1.0);
-        b = max(b, u_bloom[i].w * exp(-dot(d, d) / (r * r)));
-    }
-    return b;
-}
-
-// Flank bump in trail units: 0 on empty ground, peaks at x = a with value
-// a (so it weighs like a trail of that strength), and falls off again on the
-// centreline of a strong trail.
-float flankBump(float x, float a) { return x * exp(1.0 - x / a); }
-
-// What level `sp` reads at p: food()'s row with the terms that point at a
-// COARSER level swapped, by u_fractal, for a pull toward that level's
-// flanks, and a push off denser finer lace for the coarser levels.
-float foodFractal(vec2 p, int sp, float repel) {
-    float wn = 1.0 - 2.0 * repel;
-    float wp = 1.0 - 0.65 * repel;
-    vec3 t = trail_at(p);
-    float f = u_fractal;
-    float s;
-    if (sp == 0) {
-        s = t.r + (wn - u_shun) * t.g + (wp - u_shun) * t.b;
-    } else if (sp == 1) {
-        s = mix(wp * t.r, u_flank * flankBump(t.r, u_flankAt), f) + t.g + (wn - 0.5 * u_shun) * t.b;
-    } else {
-        s = mix(wn * t.r, 0.6 * u_flank * flankBump(t.r, u_flankAt), f)
-          + mix(wp * t.g, u_flank * flankBump(t.g, u_flankAt), f) + t.b;
-    }
-    if (u_satcap > 0.0) {
-        float m = abs(s);
-        s = sign(s) * u_satcap * (1.0 - exp(-m / u_satcap));
-    }
-    // Light stays food, but less so down the ladder: a thread that simply
-    // climbs the light gradient is haze; one that follows its own trail and
-    // the coarser flanks is lace.
-    return s + u_food * u_lvlFood[sp] * texelFetch(u_gray, cell(p), 0).r;
-}
-
-// Where a stranded fine agent may land: on the lit subject (the stock
-// respawn weight) or on the flank of a coarser trail, whichever is better.
-float landWeight(vec2 c, int lv) {
-    ivec2 ci = cell(c);
-    float w = texelFetch(u_matte, ci, 0).r * clamp(texelFetch(u_gray, ci, 0).r, 0.05, 1.0);
-    vec3 t = texelFetch(u_trail, ci, 0).rgb;
-    float coarse = (lv == 1) ? t.r : max(t.g, 0.7 * t.r);
-    float flank = flankBump(coarse, u_flankAt) / u_flankAt;
-    // a bloom zone is a strong landing site on a coarser flank: new threads
-    // sprout from the trunks there and grow out into the gaps
-    return max(w, (0.8 + 2.0 * bloomAt(c)) * flank);
-}
-
-// The self-similar ladder: each level is the one above it shrunk, with
-// absolute ceilings and floors so a finer level is a hairline in grid pixels
-// on any base point, and a stride capped to its sensing so no trail stipples.
-// Runs after the stock sensor ceiling (which so caps the TRUNK, the base,
-// and not each level: capped after, a long-sighted base clamped trunks and
-// veins to the same distance and the ladder collapsed to two scales).
-void ladder(int lv, float t, vec2 p, inout float sense, inout float spread,
-            inout float turn, inout float stp) {
-    float L = float(lv);
-    float ks = pow(mix(1.0, u_lvlScale.x, u_fractal), L);
-    // over the subject the finer levels shrink further still (level 0 is
-    // never touched: the body/field pen already decides the trunks' physics);
-    // inside an attention bloom they shrink again
-    float bl = (lv > 0 && u_fractal > 0.0) ? bloomAt(p) : 0.0;
-    ks *= mix(1.0, u_bodyFine, t * 0.5 * L);
-    ks *= mix(1.0, u_bloomFine, bl);
-    float ka = pow(mix(1.0, u_lvlScale.y, u_fractal), L);
-    sense *= ks;
-    stp *= ks;
-    spread *= ka;
-    if (lv > 0) {
-        // a Jones trail is about sense * sin(spread) wide: ceilings make a
-        // finer level a hairline; the floor keeps a short-sighted point's
-        // finer level from sensing under a texel and balling into dots
-        sense = min(sense, mix(sense, (lv == 1) ? u_fineMax.x : u_fineMax.y, u_fractal));
-        sense = max(sense, u_fineMin.x);
-        // a thread must be able to follow what it senses: a narrow fan and a
-        // turn at least as wide, or it circles in place and prints stars
-        spread = min(spread, mix(spread, u_fineAngle.x, u_fractal));
-        turn = max(turn, u_fineAngle.y * u_fractal * spread);
-    } else {
-        // the trunks, more loosely: a trunk that cannot steer smears into a
-        // frosted slab
-        spread = min(spread, mix(spread, u_trunkAngle.x, u_fractal));
-        turn = max(turn, u_trunkAngle.y * u_fractal * spread);
-    }
-    // calmer as a whole, and a stride past a fraction of the sensor distance
-    // stipples the trail into separate dots
-    stp *= mix(1.0, u_calm, u_fractal);
-    stp = min(stp, mix(stp, u_strideK[lv] * sense, u_fractal));
-    if (lv > 0) stp = max(stp, u_fineMin.y);
-}
-
-// The stock reseed plus die-back and the bloom pull; returns (p, heading).
-// A fine agent out in empty dark room (no coarser trail to hang from, no
-// subject under it) is recycled, and one in the room beside a trunk at
-// u_roomCull of that rate, so the room keeps its trunks and the lace gathers
-// where there is something to lace. Inside a bloom the lace is let be, and a
-// trickle of fine agents from elsewhere relocates into it.
-vec3 fractalReseed(int lv, vec2 p, float h, inout uint s) {
-    bool reseed = u_reseed > 0.0 && rnd(s) < u_reseed;
-    bool pulled = false;
-    if (lv > 0 && u_dieback > 0.0) {
-        ivec2 pc = cell(p);
-        vec3 tt = texelFetch(u_trail, pc, 0).rgb * u_inv_norm;
-        float coarse = (lv == 1) ? tt.r : max(tt.g, tt.r);
-        float under = texelFetch(u_matte, pc, 0).r;
-        float room = 1.0 - smoothstep(0.15, 0.45, under);
-        float stranded = max(1.0 - smoothstep(0.005, 0.04, coarse), u_roomCull) * room;
-        float here = bloomAt(p);
-        if (rnd(s) < u_dieback * stranded * (1.0 - here)) reseed = true;
-        if (rnd(s) < u_bloomPull * (1.0 - here)) { reseed = true; pulled = true; }
-    }
-    if (reseed) {
-        vec2 g = vec2(u_grid);
-        if (lv == 0 && u_wmax <= 0.0) {
-            p = vec2(rnd(s), rnd(s)) * g;
-            h = rnd(s) * 6.2831853;
-        } else {
-            float bmax = max(u_bloom[0].w, u_bloom[1].w);
-            float bound = (lv == 0) ? u_wmax : max(u_wmax, 0.8 + 2.0 * bmax);
-            // a pulled agent looks for its landing inside the stronger zone
-            vec4 z = (u_bloom[0].w >= u_bloom[1].w) ? u_bloom[0] : u_bloom[1];
-            for (int i = 0; i < 16; i++) {
-                vec2 c = vec2(rnd(s), rnd(s)) * g;
-                if (pulled) {
-                    // Box-Muller around the zone centre, one radius wide
-                    float r = z.z * sqrt(-2.0 * log(max(rnd(s), 1e-6)));
-                    float a = 6.2831853 * rnd(s);
-                    c = mod(z.xy + r * vec2(cos(a), sin(a)), g);
-                }
-                float w = (lv == 0)
-                    ? texelFetch(u_matte, cell(c), 0).r * clamp(texelFetch(u_gray, cell(c), 0).r, 0.05, 1.0)
-                    : landWeight(c, lv);
-                if (rnd(s) * bound < w) {
-                    p = c;
-                    h = rnd(s) * 6.2831853;
-                    break;
-                }
-            }
-        }
-    }
-    return vec3(p, h);
-}
-
 void main() {
     ivec2 ac = ivec2(gl_FragCoord.xy);
     uint idx = uint(ac.y * u_aw + ac.x);
@@ -397,14 +196,7 @@ void main() {
         // by u_hetero. Multi-scale sensing grows multi-scale structure.
         float g3 = mod(float(idx), 3.0);
         float m = (g3 < 0.5) ? 0.45 : (g3 < 1.5) ? 1.0 : 1.9;
-        if (u_fractal > 0.0) {
-            // damped: the levels are the multi-scale structure now, and a
-            // random 0.45x/1.9x on top of a deliberate ladder smears the
-            // ladder back into one scale
-            sense *= 1.0 + (m - 1.0) * u_hetero * (1.0 - 0.8 * u_fractal);
-        } else {
-            sense *= 1.0 + (m - 1.0) * u_hetero;
-        }
+        sense *= 1.0 + (m - 1.0) * u_hetero;
     }
     float spread = mix(u_spread.x, u_spread.y, t);
     float turn = mix(u_turn.x, u_turn.y, t);
@@ -433,7 +225,6 @@ void main() {
     // design, and the mosaic's long-range regimes would otherwise multiply it
     // past the point where any local structure can survive.
     sense = min(sense, u_sense_max);
-    if (u_fractal > 0.0) ladder(sp, t, p, sense, spread, turn, stp);
 
     // The wave points every heading outward, and in a field this lively the
     // very next frame steers most of them back — the gesture used to spend
@@ -445,16 +236,9 @@ void main() {
 
     // Jones steering: hold when ahead wins; coin flip when ahead loses to
     // both sides; otherwise turn toward the stronger side.
-    float fc, fl, fr;
-    if (u_fractal > 0.0) {
-        fc = foodFractal(p + vec2(cos(h), sin(h)) * sense, sp, repel);
-        fl = foodFractal(p + vec2(cos(h - spread), sin(h - spread)) * sense, sp, repel);
-        fr = foodFractal(p + vec2(cos(h + spread), sin(h + spread)) * sense, sp, repel);
-    } else {
-        fc = food(p + vec2(cos(h), sin(h)) * sense, sp, repel);
-        fl = food(p + vec2(cos(h - spread), sin(h - spread)) * sense, sp, repel);
-        fr = food(p + vec2(cos(h + spread), sin(h + spread)) * sense, sp, repel);
-    }
+    float fc = food(p + vec2(cos(h), sin(h)) * sense, sp, repel);
+    float fl = food(p + vec2(cos(h - spread), sin(h - spread)) * sense, sp, repel);
+    float fr = food(p + vec2(cos(h + spread), sin(h + spread)) * sense, sp, repel);
     float dir;
     if (fc > fl && fc > fr) dir = 0.0;
     else if (fc < fl && fc < fr) dir = (rnd(s) < 0.5) ? -1.0 : 1.0;
@@ -466,12 +250,6 @@ void main() {
 
     p += vec2(cos(h), sin(h)) * stp;
     p = mod(p, vec2(u_grid));
-
-    if (u_fractal > 0.0) {
-        // .w (the level) passes through untouched
-        f_agent = vec4(fractalReseed(sp, p, h, s), a.w);
-        return;
-    }
 
     // recycle a trickle of agents onto the lit subject (matte * luma)
     if (u_reseed > 0.0 && rnd(s) < u_reseed) {

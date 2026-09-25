@@ -4,14 +4,17 @@
 cyborg-garden-site's /physarum page next to the shaders; this module is its
 single source of truth. Payload: the behavior POINTS the shaders' uniforms
 are fed from, the mode's DEFAULTS and BUILTIN looks, every palette as
-both its gradient stops and the resolved 256-entry RGB LUT, and the relief
-light's orbit + bass rake (`depth`).
+both its gradient stops and the resolved 256-entry RGB LUT, the relief
+light's orbit + bass rake (`depth`), and the fractal veins' tuning table,
+host rules and attention-zone schedule (`fractal`; each look carries its own
+`fractal` amount in `builtin` / `defaults`).
 
     python -m dtouch.physarum_looks        # rewrite looks.json
 
 tests/test_physarum_gl.py fails when the file on disk no longer matches
 `payload()`, so a change to POINTS / BUILTIN / DEFAULTS / palette stops / the
-DEPTH_* constants must come with a regenerate.
+DEPTH_* constants / FRACTAL, FRACTAL_MIX_FULL, FRACTAL_NL, BLOOM must come
+with a regenerate.
 """
 from __future__ import annotations
 
@@ -23,7 +26,8 @@ from .modes.physarum import (DEPTH_AZ0, DEPTH_ELEV_HI, DEPTH_ELEV_LO,
                              FEEL_CURVE,
                              _PALETTE_STOPS, PALETTES_PH, PhysarumMode,
                              _palette_lut)
-from .physarum import POINT_NAMES, POINTS
+from .physarum import (BLOOM, FRACTAL, FRACTAL_MIX_FULL, FRACTAL_NL, POINT_NAMES,
+                       POINTS, PX_REF)
 
 LOOKS_PATH = os.path.join(os.path.dirname(__file__), "shaders", "physarum", "looks.json")
 
@@ -63,7 +67,26 @@ def payload():
             "feel_curve_applies": bool(DEPTH_FEEL_CURVE),
             "feel_curve": float(FEEL_CURVE),
         },
+        # the fractal veins: `table` is dtouch.physarum.FRACTAL key for key
+        # (the browser's own names, so it can stand in for its FRACTAL
+        # literal); lengths are grid px at px_ref. mix_full: compose's u_mix
+        # = min(1, amount / mix_full). level_norms: the per-level bright-end
+        # rule (physarum_gl.level_norms). bloom: the attention zones'
+        # schedule (dtouch.physarum.bloom_zones).
+        "fractal": {
+            "px_ref": int(PX_REF),
+            "mix_full": float(FRACTAL_MIX_FULL),
+            "table": _plain(FRACTAL),
+            "level_norms": _plain(FRACTAL_NL),
+            "bloom": _plain(BLOOM),
+        },
     }
+
+
+def _plain(d):
+    """A constants dict as JSON-able plain data, key order kept (lists stay
+    lists, numbers stay the numbers they are)."""
+    return json.loads(json.dumps(d))
 
 
 def dumps():

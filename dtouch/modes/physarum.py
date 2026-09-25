@@ -22,10 +22,18 @@ at the gesture. Z casts a random regime (points + look params from the
 validated bands) with a forced hop and melt surge — the slot machine that
 always pays.
 
-**Depth** (LOOK section; H toggles it flat and back) lights the picture as a
-relief of the trail under a key light that orbits slowly and drops on the
+**Depth** (LOOK section; H steps flat, relief, relief + fractal) lights the
+picture as a relief of the trail under a key light that orbits slowly and drops on the
 bass, so veins read as lit tubes stacked over one another. Both engines
 render it (tonemap.frag on the GPU, dtouch.physarum.relief on numpy).
+
+**Fractal** (LOOK section, GPU engine only; H's third step) turns the three
+species into three scales of one organism: trunks, veins at half their size,
+hairline threads at half again, the finer ones hanging off the flanks of the
+coarser, densest over the subject, drawn as outlines cut at output size.
+Two slow attention zones drift and bloom into denser lace. The CPU
+fallback does not carry it (see the note under LOOK_FRACTAL): the control hides there
+and H says so.
 
 Two engines run the same model behind the same contract: the GPU field
 (dtouch.physarum_gl — millions of agents on the full grid, moderngl
@@ -47,7 +55,7 @@ from ..hud import AMBER
 from ..matte import MatteUnavailable, make_matte, select_matte
 from ..overlay_ui import RES_OPTIONS, sync_signal
 from ..panelspec import Cycle, PresetList, Section, Slider, Toggle
-from ..physarum import POINT_NAMES, PhysarumField
+from ..physarum import BLOOM, FRACTAL, POINT_NAMES, PhysarumField, bloom_zones
 from ..physarum_gl import PhysarumFieldGL
 from ..rack_gl import PhysarumOutGL
 from .particles import MATTE_H, MATTE_W, MATTES, composite_video_bg
@@ -138,6 +146,24 @@ DEPTH_RAKE = 0.30
 # honest-slider test in tests/test_physarum_gl.py), and the curve would spend
 # the bottom of the slider on a jump from flat to 70% relief.
 DEPTH_FEEL_CURVE = False
+
+
+# ----- fractal veins (browser demo 2026-09-25, moved into the shared unit) ---
+# Per-look amounts, as the browser page tuned them; the tuning table itself
+# is dtouch.physarum.FRACTAL (the engine reads it). A custom look without
+# an amount gets FRACTAL_DEFAULT, the stock organism, so a look saved before
+# this existed renders as it always did. Panic recalls safe_look()
+# (veinwork), so on the GPU it lands on veinwork's amount, 1.0.
+LOOK_FRACTAL = {"veinwork": 1.0, "amoeba": 0.7, "ghost": 0.85,
+                "lightning": 0.9, "breath": 0.7}
+FRACTAL_DEFAULT = 0.0
+# The CPU fallback does not run the fractal veins (fractal_available() is
+# the GPU engine only). Its budget is already spent (~21 ms/frame for 100k
+# agents on the 576 grid), and the look is carried by passes numpy cannot
+# afford per frame: a 5x5 Hessian ridge detector and an outline pass at
+# OUTPUT resolution (2733x1537 at 4K: fractal_render_size). A reduced port
+# would be a different picture under the same name. So on CPU the Fractal
+# slider is hidden and H skips its third step, saying why.
 
 
 def depth_light(t, bass=0.0, sens=1.0):
@@ -239,33 +265,40 @@ class PhysarumMode:
     BUILTIN = {
         "veinwork":  dict(point_bg="veins", point_fg="fingers", palette="arctic",
                           matte="auto", food=0.35, gain=1.0, decay=0.94, exposure=3.5,
-                          weave=0.7, evolve=0.5, react=0.7, depth=LOOK_DEPTH["veinwork"]),
+                          weave=0.7, evolve=0.5, react=0.7, depth=LOOK_DEPTH["veinwork"],
+                          fractal=LOOK_FRACTAL["veinwork"]),
         "amoeba":    dict(point_bg="cells", point_fg="storm", palette="fire",
                           matte="motion", food=0.50, gain=1.1, decay=0.92, exposure=3.0,
-                          weave=0.55, evolve=0.6, react=0.8, depth=LOOK_DEPTH["amoeba"]),
+                          weave=0.55, evolve=0.6, react=0.8, depth=LOOK_DEPTH["amoeba"],
+                          fractal=LOOK_FRACTAL["amoeba"]),
         "ghost":     dict(point_bg="haze", point_fg="web", palette="mono",
                           matte="person", food=0.60, gain=0.9, decay=0.96, exposure=4.5,
-                          weave=0.5, evolve=0.75, react=0.6, depth=LOOK_DEPTH["ghost"]),
+                          weave=0.5, evolve=0.75, react=0.6, depth=LOOK_DEPTH["ghost"],
+                          fractal=LOOK_FRACTAL["ghost"]),
         "lightning": dict(point_bg="web", point_fg="fingers", palette="violet",
                           matte="edges", food=0.45, gain=1.4, decay=0.90, exposure=3.0,
-                          weave=0.65, evolve=0.6, react=0.8, depth=LOOK_DEPTH["lightning"]),
+                          weave=0.65, evolve=0.6, react=0.8, depth=LOOK_DEPTH["lightning"],
+                          fractal=LOOK_FRACTAL["lightning"]),
         "breath":    dict(point_bg="haze", point_fg="cells", palette="aurora",
                           matte="luma", food=0.30, gain=0.8, decay=0.95, exposure=4.0,
-                          weave=0.45, evolve=0.7, react=0.5, depth=LOOK_DEPTH["breath"]),
+                          weave=0.45, evolve=0.7, react=0.5, depth=LOOK_DEPTH["breath"],
+                          fractal=LOOK_FRACTAL["breath"]),
     }
 
     # apply="reset" merges a look over these; matte / video_bg / video_mix are
     # deliberately absent (keep semantics — rig switches survive look hops).
     DEFAULTS = dict(point_bg="veins", point_fg="fingers", palette="arctic",
                     food=0.35, gain=1.0, decay=0.94, exposure=3.5, grain=0.2,
-                    weave=0.6, evolve=0.5, react=0.7, depth=DEPTH_DEFAULT)
+                    weave=0.6, evolve=0.5, react=0.7, depth=DEPTH_DEFAULT,
+                    fractal=FRACTAL_DEFAULT)
 
     _UI_DEFAULTS = dict(ph_matte_idx=0, ph_food=0.35, ph_video_bg=False,
                         ph_video_mix=0.5, ph_point_bg_idx=0, ph_point_fg_idx=2,
                         ph_gain=1.0, ph_decay=0.94, ph_palette_idx=0,
                         ph_exposure=3.5, ph_grain=0.2,
                         ph_weave=0.6, ph_evolve=0.5, ph_react=0.7,
-                        ph_depth=DEPTH_DEFAULT, ph_quality_idx=0)
+                        ph_depth=DEPTH_DEFAULT, ph_fractal=FRACTAL_DEFAULT,
+                        ph_quality_idx=0)
 
     # Per-engine sizing. The CPU field is budgeted at ~21 ms/frame on the
     # working grid; the GPU field runs 2M agents on a 1280x736 grid in ~8 ms
@@ -289,6 +322,26 @@ class PhysarumMode:
         "quality": ((2560, 1472), 1_900_000),
     }
     QUALITY_NAMES = list(QUALITY)
+    # The fractal amount's agent pool per tier, as a multiple of the tier's
+    # n (the engine's fractal_density; FRACTAL["density"] where it fits).
+    # This is the tier's governor for the fractal. At `quality` the full
+    # 1.8x pool (3.4M agents) cost 20.6 ms of GPU per frame (update 7.5 +
+    # deposit 9.1, both linear in agents; the picture passes ~2 ms), and the
+    # GPU rack adds ~2.2 ms at 4K, against 16.7 ms. So `quality` keeps its
+    # own pool (1.0x: 13.5 ms, 15.7 with the rack). What that costs the
+    # picture was measured, not assumed: over the suite's six seeds and five
+    # looks at their shipped amounts, the edge / fine-structure ratios, mean
+    # grey and lit share at 1.0x all sit inside 1.8x's seed spread (the
+    # per-level bright ends renormalise each level). The tier toast says it.
+    # Measured 2026-09-25, M4 Max, 4K out, veinwork at 1.0 (the heaviest
+    # shipped amount); tests/test_physarum_fractal.py
+    # test_the_quality_tiers_governed_pool_keeps_the_look pins the spread.
+    # `perform` and `balance` keep the full pool: at perform the fractal's
+    # cost on the frame clock was never the pool (mode.step at 4K on a 1.0x
+    # pool measured no faster) but a synchronous stats readback mid-frame.
+    # The engine now reads those stats a frame late (PhysarumFieldGL.
+    # _stats_late), and the fractal frame sits at the stock frame's median.
+    FRACTAL_DENSITY_TIER = {"perform": 1.8, "balance": 1.8, "quality": 1.0}
 
     def __init__(self, matte="auto", grid=None, n=None, seed=1, engine="auto"):
         if engine not in self.ENGINES:
@@ -337,6 +390,12 @@ class PhysarumMode:
         self._melt_pulse = 0.0       # extra melt right after a cast (random)
         self._cast_rng = np.random.default_rng(seed * 104729 + 31)
         self._depth_last = DEPTH_DEFAULT  # what h restores after FLAT
+        # what h's third step restores: the live look's amount, followed
+        # whenever something other than h changes it (a look, the slider)
+        self._fractal_last = LOOK_FRACTAL[self.safe_look()]
+        self._fractal_seen = None
+        self._bloom_snd = 0.0        # slow envelope of the audio amplitude
+        self._fractal_err_told = False  # the fractal-build failure, toasted once
 
     # ----- lifecycle -----
     def start(self, host):
@@ -366,7 +425,9 @@ class PhysarumMode:
             self.n = self._n or q_n
             gw, gh = self.grid
             try:
-                pf = PhysarumFieldGL(n=self.n, gw=gw, gh=gh, seed=self.seed)
+                pf = PhysarumFieldGL(n=self.n, gw=gw, gh=gh, seed=self.seed,
+                                     fractal_density=self.FRACTAL_DENSITY_TIER.get(
+                                         self._quality))
                 self.engine = "gl"
                 # The look/point parameters (sense, step — and the blur that
                 # sets vein thickness) are calibrated in CPU-grid pixels. On
@@ -414,6 +475,7 @@ class PhysarumMode:
         for k, v in self._UI_DEFAULTS.items():
             if not hasattr(ui, k):
                 setattr(ui, k, v)
+        ui.ph_fractal_ok = self.fractal_available()
 
     # ----- panel / commands -----
     def panel_spec(self):
@@ -443,7 +505,9 @@ class PhysarumMode:
                       save=False, nudge=False,
                       tip="How finely the mold itself is simulated. Higher "
                           "keeps veins crisp on a big projector, and costs "
-                          "speed. Switching regrows the field in seconds."),
+                          "speed. Switching regrows the field in seconds. "
+                          "At quality the fractal veins add no agents, to "
+                          "hold the frame rate."),
             ]),
             Section("MOLD", [
                 Cycle("body", "ph_point_fg_idx", pts, save_key="point_fg",
@@ -486,6 +550,15 @@ class PhysarumMode:
                 Slider("Depth", "ph_depth", 0.0, 1.0, save_key="depth",
                        tip="Lights the veins as raised tubes. Zero is flat "
                            "glow; high carves every trunk out of the dark."),
+                # GPU only (fractal_available): hidden on the CPU fallback
+                # rather than shown doing nothing. The gate is the engine; step()
+                # publishes it as ph_fractal_ok so the predicate stays a
+                # predicate over the UI state, like every other gate
+                Slider("Fractal", "ph_fractal", 0.0, 1.0, save_key="fractal",
+                       show_when=lambda s: bool(getattr(s, "ph_fractal_ok", False)),
+                       tip="Grows the veins as one self-similar organism: "
+                           "trunks, finer veins off their flanks, hairline "
+                           "threads off those. Zero is the classic mold."),
             ]),
         ]
 
@@ -534,7 +607,7 @@ class PhysarumMode:
     def commands(self):
         """X swaps body/field points; B pours agents onto the subject;
         W ripples the whole organism outward; Z casts a random regime; H
-        toggles the relief flat and back.
+        steps flat, relief, relief + fractal veins (flat and relief on CPU).
         Burst/wave land at the matte's bright centroid, resolved on the next
         step (commands run between frames, and the shell owns the mouse)."""
         ui, toasts = self.host.ui, self.host.hud.toasts
@@ -561,16 +634,41 @@ class PhysarumMode:
                          % (pts[fg_i], pts[bg_i]))
 
         def _depth():
-            # h ("height"): flat against the last non-zero depth. A toggle,
-            # not a scene change, so it stays out of AUTO_RELEASE_KEYS.
+            """H ("height"): three steps like the browser's, flat (depth 0,
+            fractal 0), the relief (depth, fractal 0), the relief plus the
+            fractal veins (a look with no fractal amount, or the CPU engine,
+            keeps two). A toggle, not a scene change, so it stays out of
+            AUTO_RELEASE_KEYS.
+
+            Depth 0 with fractal above 0 (the sliders or a saved look can
+            set it) is not one of the three steps. The first press reads it
+            as flat: it brings the relief back and drops the fractal. The
+            press after that brings the fractal back, with the relief under
+            it, so H never returns to the fractal without the relief; only
+            the sliders do."""
+            self._follow_fractal()
             cur = float(getattr(ui, "ph_depth", DEPTH_DEFAULT))
-            if cur > 0.0:
+            fr = float(getattr(ui, "ph_fractal", FRACTAL_DEFAULT))
+            gpu = self.fractal_available()
+            has = self._fractal_last > 0.0
+            if cur > 0.0 and (fr > 0.0 or not (gpu and has)):
                 self._depth_last = cur
                 ui.ph_depth = 0.0
-                toasts.flash("FLAT")
-            else:
+                ui.ph_fractal = 0.0
+                # (the third step is missing because this is the CPU
+                # engine, or because this GPU could not build its passes)
+                toasts.flash("FLAT" if gpu or not has
+                             else "FLAT  (fractal is GPU-only)" if self.engine != "gl"
+                             else "FLAT  (fractal unavailable here)")
+            elif cur <= 0.0:
                 ui.ph_depth = self._depth_last
+                ui.ph_fractal = 0.0
                 toasts.flash("DEPTH %.1f" % ui.ph_depth)
+            else:
+                ui.ph_fractal = self._fractal_last
+                toasts.flash("DEPTH %.1f + FRACTAL %.1f"
+                             % (ui.ph_depth, ui.ph_fractal))
+            self._fractal_seen = float(ui.ph_fractal)
         return {"physarum.swap": Command("physarum.swap",
                                          "Swap body/field points", "x", _swap),
                 "physarum.burst": Command("physarum.burst",
@@ -581,10 +679,30 @@ class PhysarumMode:
                                            "Random regime (always pays)", "z",
                                            _random),
                 "physarum.depth": Command("physarum.depth",
-                                          "Depth on/flat", "h", _depth)}
+                                          "Depth: flat / relief / fractal", "h",
+                                          _depth)}
 
     def safe_look(self):
         return "veinwork"
+
+    def fractal_available(self):
+        """Whether the running engine draws the fractal veins: the GPU
+        engine, when its fractal passes built. The CPU fallback has no port
+        (the note under LOOK_FRACTAL). Before start() nothing runs, and
+        nothing is offered."""
+        if self.engine != "gl":
+            return False
+        return getattr(self.pf, "fractal_error", None) is None
+
+    def _follow_fractal(self):
+        """Keep h's restore value on the live look: a change to ph_fractal
+        that h did not make (a look was applied, the slider moved) becomes
+        the amount the third step brings back, zero included, as the
+        browser's applyLook does."""
+        v = float(self._ui("ph_fractal", FRACTAL_DEFAULT))
+        if self._fractal_seen is None or v != self._fractal_seen:
+            self._fractal_last = v
+            self._fractal_seen = v
 
     @staticmethod
     def signal_dither_rows(out_h):
@@ -625,14 +743,20 @@ class PhysarumMode:
             self.pf = self._build_field(self.host)
             if self.engine == "gl":
                 g_w, g_h = self.grid
-                self.host.hud.toasts.flash(
-                    f"quality {want_q}  {g_w}x{g_h} {_fmt_agents(self.n)}")
+                msg = f"quality {want_q}  {g_w}x{g_h} {_fmt_agents(self.n)}"
+                fd = self.pf.fractal_density
+                if fd < FRACTAL["density"] and self.fractal_available():
+                    # the tier's fractal governor, said out loud
+                    msg += f"  fractal pool {fd:.1f}x"
+                self.host.hud.toasts.flash(msg)
         elif want_q != self._quality:
             self._quality = want_q      # remember; applies if GL boots later
 
         pf = self.pf
         gw, gh = self.grid
         rw, rh = self.host.res
+        if ui is not None:
+            ui.ph_fractal_ok = self.fractal_available()   # the Fractal row's gate
 
         if ui is not None and getattr(ui, "ph_matte_idx", None) is not None:
             want = self.mattes[ui.ph_matte_idx % len(self.mattes)]
@@ -793,6 +917,21 @@ class PhysarumMode:
         bass = float(audio_levels["bass"]) if audio_levels is not None else 0.0
         pf.light = screen_to_grid(
             depth_light(self._orbit_t, bass, float(self._ui("sens", 1.0))))
+        # fractal veins (GPU engine only): the amount, the size the outlines
+        # are cut at (the output), the length unit, and the two attention
+        # zones on the mode clock, opened a little by the sound's slow
+        # envelope
+        self._follow_fractal()
+        if self.engine == "gl":
+            fa = min(max(float(self._ui("ph_fractal", FRACTAL_DEFAULT)), 0.0), 1.0)
+            amp = float(audio_levels.get("amp", 0.0)) if audio_levels is not None else 0.0
+            self._bloom_snd += (amp - self._bloom_snd) * BLOOM["sound_ema"]
+            pf.fractal = fa
+            pf.out_size = (rw, rh)
+            pf.px_scale = self._px_scale
+            pf.bloom = bloom_zones(self._t, gw, gh, fa, self._bloom_snd,
+                                   float(self._ui("sens", 1.0)))
+            pf.bloom_t = self._t
 
         small = cv2.resize(frame_bgr, (MATTE_W, MATTE_H))
         m = cv2.resize(self.mat.compute(small), (gw, gh))
@@ -923,6 +1062,12 @@ class PhysarumMode:
             self._burst_pending = self._wave_pending = False
 
         pf.update(m, gray, keep)
+        err = getattr(pf, "fractal_error", None)
+        if err is not None and not self._fractal_err_told:
+            # the engine fell back to the stock mold and the Fractal row is
+            # about to hide: say so on screen, not only in the log
+            self._fractal_err_told = True
+            self.host.hud.toasts.flash(f"fractal veins unavailable: {err}"[:80], AMBER)
 
         pal = self.palettes[int(self._ui("ph_palette_idx", 0)) % len(self.palettes)]
         # SIGNAL on the GPU (DESIGN.md §2.4; PR #26's measured port list):
@@ -944,7 +1089,12 @@ class PhysarumMode:
                     self._last_lum = samp
                 return out
 
-        lum = pf.luminance()
+        # the GL engine's 8-bit picture goes straight into the colormap: the
+        # float round trip (uint8 -> /255 -> *255 -> uint8) is the identity
+        # on all 256 values and cost ~2.5 ms of CPU at the fractal's output
+        # size; applyColorMap on those bytes is exactly what _colorize runs
+        lum8 = pf.luminance_u8() if self.engine == "gl" and pal != "video" else None
+        lum = pf.luminance() if lum8 is None else None
         # staleness tracker input, next frame: the engine's flat sample, the
         # same one the GPU-rack path above feeds. Not `lum` — with depth > 0
         # that is relief-lit, and the lighting (dark flanks, the orbiting
@@ -954,10 +1104,16 @@ class PhysarumMode:
         # lum_sample() is None only on an empty trail, where `lum` is flat
         # zeros on both engines (no relief is applied to an empty picture)
         samp = pf.lum_sample()
+        if samp is None and lum is None:
+            lum = lum8.astype(np.float32) * np.float32(1.0 / 255.0)
         self._last_lum = samp if samp is not None else lum
-        if pal == "video":
+        if lum8 is not None:
+            out_small = cv2.applyColorMap(lum8, _palette_lut(pal).reshape(256, 1, 3))
+        elif pal == "video":
             # veins lit by the footage's own color — the mold as a lampshade
-            color = cv2.cvtColor(cv2.resize(small, (gw, gh)),
+            # (at the picture's own size: the grid, or the fractal outlines'
+            # output size)
+            color = cv2.cvtColor(cv2.resize(small, (lum.shape[1], lum.shape[0])),
                                  cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
             out_small = (lum[..., None] * (0.25 + 0.75 * color) * 255.0).astype(np.uint8)
         else:
@@ -971,17 +1127,18 @@ class PhysarumMode:
 
     # ----- SIGNAL on the GPU -----
     def _ensure_glout(self, rw, rh):
-        """The GL output composer + rack, rebuilt when the field, grid, or
-        output resolution changes (all of them size its textures). Must be
-        called with the field's context bound."""
-        key = (id(self.pf), self.grid, (rw, rh))
+        """The GL output composer + rack, rebuilt when the field, the
+        picture's size (the grid, or the fractal outlines' render size) or
+        the output resolution changes (all of them size its textures). Must
+        be called with the field's context bound."""
+        lw, lh = self.pf.render_size()
+        key = (id(self.pf), (lw, lh), (rw, rh))
         if self._glout is not None and self._glout_key != key:
             if self._glout.ctx is self.pf.ctx:
                 self._glout.release()   # same live ctx: free the old textures
             self._glout = None
         if self._glout is None:
-            gw, gh = self.grid
-            self._glout = PhysarumOutGL(self.pf.ctx, gw, gh, rw, rh)
+            self._glout = PhysarumOutGL(self.pf.ctx, lw, lh, rw, rh)
             self._glout_key = key
         return self._glout
 
@@ -1015,7 +1172,7 @@ class PhysarumMode:
                 glout = self._ensure_glout(rw, rh)
                 pf.luminance_into_tex()
                 lut = None if pal == "video" else _palette_lut(pal)
-                src = glout.compose(pf.tex_lum, lut, video_small, cam, mix)
+                src = glout.compose(pf.lum_tex, lut, video_small, cam, mix)
                 glout.rack.run(cb, cb.plan(rh, rw), src)
                 return glout.rack.read()
         except (KeyboardInterrupt, SystemExit):

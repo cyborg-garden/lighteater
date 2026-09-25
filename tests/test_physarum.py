@@ -265,6 +265,9 @@ def test_depth_key_toggles_flat_and_back_to_the_last_depth(tmp_path):
     ui, m = host.ui, host.mode
     run = m.commands()["physarum.depth"].run
     ui.ph_depth = 0.9
+    # a look without a fractal amount: two steps on either engine (the
+    # three-step ladder is tests/test_physarum_fractal.py's)
+    ui.ph_fractal = 0.0
     run()
     assert ui.ph_depth == 0.0
     assert host.hud.toasts._center.text == "FLAT"

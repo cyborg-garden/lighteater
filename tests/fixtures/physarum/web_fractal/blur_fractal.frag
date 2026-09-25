@@ -1,3 +1,17 @@
+// DEMO, WEB ONLY: moves to the desktop shared unit (dtouch/shaders/physarum)
+// if kept. A modified copy of vendor/physarum/blur.frag for the fractal
+// veins demo, loaded only when the fractal amount is above 0.
+//
+// One change: the three channels are three SCALES now (r trunks, g veins,
+// b threads), and a thread cannot stay a 1 px thread under the same box
+// blur that rounds a trunk. u_diffC blends each channel between its own
+// undiffused value (0) and the full box (1), and u_decayC scales each
+// channel's LOSS per frame (d_c = 1 - (1 - d) * u_decayC): a thread laid by
+// a few slow agents has to remember itself longer than a trunk that a crowd
+// repaints every frame. The fine levels stay crisp and legible while the
+// trunks keep today's soft round profile. u_diffC = (1,1,1), u_decayC =
+// (1,1,1) is the vendored shader's arithmetic.
+//
 // Physarum diffuse + decay — one axis of a separable box blur over the trail.
 //
 // Run twice per frame with fullscreen.vert:
@@ -14,16 +28,6 @@
 // dtouch.physarum's KEEP_HOLD / MELT_DROP / MELT_FLOOR.
 // Edges wrap (the agents already do). All three species channels are
 // diffused and decayed together, with the same kernel and the same keep map.
-//
-// Fractal veins (u_fractal > 0; 0 is the stock arithmetic bit for bit): the
-// three channels are three SCALES (r trunks, g veins, b threads), and a
-// thread cannot stay a 1 px thread under the box blur that rounds a trunk.
-// u_diffC blends each channel between its own undiffused value (0) and the
-// full box (1); u_sharpC scales each channel's lateral inhibition; u_decayC
-// scales each channel's LOSS per frame (d_c = 1 - (1 - d) * u_decayC): a
-// thread laid by a few slow agents has to remember itself longer than a
-// trunk a crowd repaints every frame. On the fine channels the inhibition
-// may only dig, never raise (see below).
 
 uniform sampler2D u_src;
 uniform sampler2D u_add;
@@ -37,7 +41,6 @@ uniform float u_scale;
 uniform float u_decay;
 uniform float u_sharpen;   // lateral inhibition, 0 = plain box blur
 uniform int u_wide;        // wide-box half-width for the inhibition surround
-uniform float u_fractal;   // 0 = stock; > 0 reads the three below
 uniform vec3 u_diffC;      // per-channel diffusion share (1 = full box, 0 = none)
 uniform vec3 u_sharpC;     // per-channel multiplier on the lateral inhibition
 uniform vec3 u_decayC;     // per-channel multiplier on the per-frame loss, each in (0, 1]
@@ -67,22 +70,7 @@ void main() {
         d = u_decay + (0.995 - u_decay) * max(k, 0.0) - 0.12 * max(-k, 0.0);
         d = clamp(d, 0.70, 0.995);
     }
-    if (u_fractal > 0.0) {
-        vec3 o = mix(mid, acc * u_scale, u_diffC);
-        if (u_sharpen > 0.0) {
-            vec3 surround = wide * (1.0 / float(2 * rw + 1));
-            vec3 inh = max(o - u_sharpen * u_sharpC * (surround - o), vec3(0.0));
-            // On the fine levels the centre is barely diffused, so a 1 px
-            // thread stands far above its surround and the stock operator
-            // would AMPLIFY it every frame (runaway to the float ceiling).
-            // There the inhibition may only dig; the trunks keep the stock form.
-            o = vec3(inh.r, min(inh.gb, o.gb));
-        }
-        // loss scaled per channel; with d < 1 and u_decayC > 0 nothing grows
-        f_color = vec4(o * (1.0 - (1.0 - d) * u_decayC), 1.0);
-        return;
-    }
-    vec3 out3 = acc * u_scale;
+    vec3 out3 = mix(mid, acc * u_scale, u_diffC);
     // Lateral inhibition. A plain box blur is the most structure-destroying
     // kernel there is at a given radius: it only ever smears. Subtracting a
     // slice of the WIDER surround turns diffusion into a centre-surround
@@ -92,7 +80,13 @@ void main() {
     // what reads as "carved" rather than "smoked".
     if (u_sharpen > 0.0) {
         vec3 surround = wide * (1.0 / float(2 * rw + 1));
-        out3 = max(out3 - u_sharpen * (surround - out3), vec3(0.0));
+        vec3 inh = max(out3 - u_sharpen * u_sharpC * (surround - out3), vec3(0.0));
+        // On the fine levels the centre is barely diffused, so a 1 px thread
+        // stands far above its surround and the stock operator would AMPLIFY
+        // it every frame (runaway to the float ceiling). There the inhibition
+        // may only dig, never raise; the trunk channel keeps the stock form.
+        out3 = vec3(inh.r, min(inh.gb, out3.gb));
     }
-    f_color = vec4(out3 * d, 1.0);
+    // loss scaled per channel; with d < 1 and u_decayC > 0 nothing can grow
+    f_color = vec4(out3 * (1.0 - (1.0 - d) * u_decayC), 1.0);
 }
