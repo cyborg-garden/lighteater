@@ -3,17 +3,11 @@
 // Drawn with fullscreen.vert into a small float target (ceil(gw/stride) x
 // ceil(gh/stride)); the host reads it back and takes the 95th percentile of
 // .r (trail normalization) and the mean of .g (deposit normalization).
-//
-// Fractal veins (u_fractal > 0): .b and .a carry the two finer level
-// channels (trail g and b) so the host can take each level's own bright end
-// (trunks = r - b - a). .r and .g are the same either way; at u_fractal 0
-// .ba stay (0, 1), the stock output bit for bit.
 
 uniform sampler2D u_trail;
 uniform sampler2D u_laid;
 uniform int u_stride;
 uniform ivec2 u_grid;
-uniform float u_fractal;   // > 0: finer level channels in .b, .a
 
 layout(location = 0) out vec4 f_color;
 
@@ -24,8 +18,4 @@ void main() {
     vec3 t = texelFetch(u_trail, c, 0).rgb;
     vec3 l = texelFetch(u_laid, c, 0).rgb;
     f_color = vec4(t.r + t.g + t.b, l.r + l.g + l.b, 0.0, 1.0);
-    // (the stock expression untouched, then .ba overwritten: written as two
-    // branches, the compiler shared t.g + t.b between them and moved the sum
-    // by an ulp)
-    if (u_fractal > 0.0) f_color.ba = vec2(t.g, t.b);
 }

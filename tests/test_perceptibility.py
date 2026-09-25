@@ -130,6 +130,16 @@ _MODES = {
                                      seed=7, matte="luma"),
     "dithergirl": lambda: DitherGirlMode(),
 }
+# Rigs for controls whose gate is the ENGINE rather than a panel state: the
+# sweep's physarum runs on the CPU fallback (deterministic, no GPU in CI),
+# where such a control is hidden and must be dead; its gate-ON side is
+# checked here, on the engine that draws it (skipped where there is none).
+_ENGINE_MODES = {
+    "physarum-gl": lambda: PhysarumMode(engine="gl", grid=RES, n=16000,
+                                        seed=7, matte="luma"),
+}
+# attr -> the rig its gate-ON perceptibility is measured on
+ENGINE_GATED = {"ph_fractal": "physarum-gl"}
 
 _render_cache = {}
 
@@ -157,7 +167,8 @@ def _render(mode_id, overrides, tmp_path):
     real_start = Host._start_recording
     Host._start_recording = fake_start
     try:
-        host = Host(_MODES[mode_id](), source=_DetSource(on_read=on_read),
+        make = _MODES.get(mode_id) or _ENGINE_MODES[mode_id]
+        host = Host(make(), source=_DetSource(on_read=on_read),
                     res=RES, show=False, max_frames=FRAMES, preset=None,
                     presets_path=str(tmp_path / f"{len(_render_cache)}p.json"),
                     state_path=str(tmp_path / f"{len(_render_cache)}s.json"))
@@ -217,6 +228,9 @@ GATE_ON = {
     "dg_matte_black": {"dg_matte_idx": 2},     # motion matte on
     "dg_hue": {"dg_tint": 0.6},
     "dg_bias_idx": {"dg_algo_idx": 0},         # Bayer (ordered)
+    # engine-gated (ENGINE_GATED): the mode publishes whether its engine
+    # draws the fractal veins; the ON render runs on the GPU rig
+    "ph_fractal": {"ph_fractal_ok": True},
 }
 
 # attr -> the state overrides under which a show_when-gated control is HIDDEN.
@@ -264,6 +278,43 @@ def _candidates(w, on_check):
     return []
 
 
+def _stub_host():
+    return SimpleNamespace(ui=SimpleNamespace(), res=RES, hud=SimpleNamespace(
+        toasts=SimpleNamespace(flash=lambda *a, **k: None)))
+
+
+_engine_ok = {}
+
+
+def _engine_available(rig):
+    """Whether an engine rig really boots its engine here."""
+    if rig not in _engine_ok:
+        m = _ENGINE_MODES[rig]()
+        m.start(_stub_host())
+        _engine_ok[rig] = m.engine == "gl"
+        m.stop()
+    return _engine_ok[rig]
+
+
+def test_engine_gated_rig_draws_the_control():
+    """The engine rig is not vacuous: where it boots, the fractal row is
+    shown there and hidden on the sweep's CPU rig."""
+    if not _engine_available("physarum-gl"):
+        pytest.skip("no GL context available (CI)")
+    for rig, want in (("physarum-gl", True), ("physarum", False)):
+        m = (_ENGINE_MODES.get(rig) or _MODES[rig])()
+        host = _stub_host()
+        ui = host.ui
+        m.start(host)
+        try:
+            m.configure_ui(ui)
+            w = next(x for _s, x in walk_spec(m.panel_spec())
+                     if getattr(x, "attr", None) == "ph_fractal")
+            assert visible(ui, w) is want, rig
+        finally:
+            m.stop()
+
+
 def _composed_spec(mode_id):
     mode = _MODES[mode_id]()
     host = Host(mode, source=_DetSource(), res=RES, show=False, max_frames=0,
@@ -295,7 +346,12 @@ def test_every_visible_control_is_perceptible(mode_id, tmp_path):
     for w, gated in _controls(mode_id):
         state = dict(GATE_ON[w.attr]) if gated else {}
         state.update(ON_EXTRA.get((mode_id, w.attr), {}))
-        d = _max_diff(mode_id, state, w.attr,
+        rig = mode_id
+        if w.attr in ENGINE_GATED:
+            rig = ENGINE_GATED[w.attr]
+            if not _engine_available(rig):
+                continue              # no GPU here (CI): the OFF side still runs
+        d = _max_diff(rig, state, w.attr,
                       _candidates(w, on_check=True), tmp_path)
         if d < FLOOR:
             failures.append(f"{w.attr} ({w.label}) in {state or 'base'}: "
