@@ -459,10 +459,15 @@ def test_looks_json_exports_the_fractal_tables():
         inspect.signature(level_norms).parameters["ema"].default
     assert fr["bloom"] == BLOOM
     assert fr["px_ref"] == PX_REF == PhysarumMode.CPU_GRID[0]
+    # every look lands on depth with the fractal off, and carries its tuned
+    # amount for the depth + fractal step as `fractal_on`
     for name, look in d["builtin"].items():
-        assert look["fractal"] == LOOK_FRACTAL[name] == PhysarumMode.BUILTIN[name]["fractal"]
-        assert 0.0 < look["fractal"] <= 1.0
-    assert d["defaults"]["fractal"] == FRACTAL_DEFAULT == 0.0
+        assert look["fractal"] == PhysarumMode.BUILTIN[name]["fractal"] == 0.0
+        assert look["fractal_on"] == LOOK_FRACTAL[name] == \
+            PhysarumMode.BUILTIN[name]["fractal_on"]
+        assert 0.0 < look["fractal_on"] <= 1.0
+    assert set(d["builtin"]) == set(LOOK_FRACTAL)
+    assert d["defaults"]["fractal"] == d["defaults"]["fractal_on"] == FRACTAL_DEFAULT == 0.0
 
 
 def test_bloom_zones_land_where_the_browser_puts_them():
@@ -913,7 +918,10 @@ def test_h_steps_flat_relief_fractal_on_the_gpu(tmp_path):
         pytest.skip("no GL context available (CI)")
     run = m.commands()["physarum.depth"].run
     toast = lambda: host.hud.toasts._center.text          # noqa: E731
-    assert ui.ph_fractal == LOOK_FRACTAL["veinwork"] and ui.ph_depth == 0.9
+    # lands on depth, fractal off; H steps up to the look's on-amount
+    assert ui.ph_fractal == 0.0 and ui.ph_depth == 0.9
+    run()
+    assert (ui.ph_depth, ui.ph_fractal, toast()) == (0.9, 1.0, "DEPTH 0.9 + FRACTAL 1.0")
     run()
     assert (ui.ph_depth, ui.ph_fractal, toast()) == (0.0, 0.0, "FLAT")
     run()
@@ -942,11 +950,58 @@ def test_h_steps_flat_relief_fractal_on_the_gpu(tmp_path):
     labels = [getattr(x, "label", None) for x in look.widgets]
     assert labels[labels.index("Depth") + 1] == "Fractal"
     # a look without an amount (one saved before the fractal): the stock
-    # organism. (Panic recalls veinwork, and so its 1.0.)
+    # organism. (Panic recalls veinwork: depth, fractal off, H to its 1.0.)
     ui.ph_fractal = 0.9
     apply_look(ui, ui.spec, {}, defaults=PhysarumMode.DEFAULTS)
     assert ui.ph_fractal == FRACTAL_DEFAULT
     m.stop()
+
+
+def test_every_builtin_lands_on_depth_and_h_reaches_its_on_amount(tmp_path):
+    """Every built-in look lands with the fractal OFF and its relief up (the
+    owner's call, 2026-09-28), and H's next press brings in exactly the
+    look's tuned `fractal_on`. Panic (safe_look) lands the same way."""
+    host = _booted(tmp_path, "auto")
+    ui, m = host.ui, host.mode
+    if m.engine != "gl":
+        pytest.skip("no GL context available (CI)")
+    run = m.commands()["physarum.depth"].run
+    try:
+        for name, cfg in list(PhysarumMode.BUILTIN.items()) + [
+                ("panic", PhysarumMode.BUILTIN[m.safe_look()])]:
+            ui.ph_fractal = 0.5                 # whatever was live before
+            assert host._apply_look(name, cfg)
+            assert ui.ph_fractal == 0.0, name
+            assert ui.ph_depth == cfg["depth"] > 0.0, name
+            m._follow_fractal()                 # what every step runs first
+            assert ui.ph_fractal == 0.0, name
+            run()
+            assert (ui.ph_depth, ui.ph_fractal) == (cfg["depth"], LOOK_FRACTAL[
+                "veinwork" if name == "panic" else name]), name
+    finally:
+        m.stop()
+
+
+def test_a_look_hands_h_its_on_amount_on_any_engine(tmp_path):
+    """The on-amount travels with the look through the shell (look_applied),
+    whichever engine runs: a built-in's `fractal_on`, a custom look's own
+    `fractal` when it has no `fractal_on`, and 0 for a look with neither."""
+    host = _booted(tmp_path, "cpu")
+    m = host.mode
+    try:
+        assert m._fractal_last == LOOK_FRACTAL["veinwork"]      # boot look
+        for name, cfg in PhysarumMode.BUILTIN.items():
+            assert host._apply_look(name, cfg)
+            assert host.ui.ph_fractal == 0.0
+            assert m._fractal_last == LOOK_FRACTAL[name]
+            m._follow_fractal()                 # the landed 0 is not an amount
+            assert m._fractal_last == LOOK_FRACTAL[name]
+        assert host._apply_look("custom", {"fractal": 0.4})
+        assert host.ui.ph_fractal == 0.4 and m._fractal_last == 0.4
+        assert host._apply_look("old", {})
+        assert host.ui.ph_fractal == 0.0 and m._fractal_last == FRACTAL_DEFAULT
+    finally:
+        m.stop()
 
 
 def test_cpu_fallback_hides_the_control_and_h_skips_the_fractal_step(tmp_path):
@@ -959,7 +1014,8 @@ def test_cpu_fallback_hides_the_control_and_h_skips_the_fractal_step(tmp_path):
     assert not visible(ui, _fractal_widget(ui))
     run = m.commands()["physarum.depth"].run
     toast = lambda: host.hud.toasts._center.text          # noqa: E731
-    assert ui.ph_fractal == LOOK_FRACTAL["veinwork"]       # the look carries it
+    assert ui.ph_fractal == 0.0                            # the look lands on depth
+    assert m._fractal_last == LOOK_FRACTAL["veinwork"]     # and carries its amount
     seen = []
     for _ in range(4):
         run()

@@ -974,6 +974,11 @@ class Host:
         try:
             skipped = apply_look(self.ui, self.ui.spec, cfg,
                                  self.mode.DEFAULTS)
+            # optional mode hook: look data that is not a panel control
+            # (physarum's `fractal_on`, the amount H's third step brings in)
+            hook = getattr(self.mode, "look_applied", None)
+            if hook is not None:
+                hook(cfg)
         except (KeyboardInterrupt, SystemExit):
             raise
         except Exception as e:                       # noqa: BLE001 — §6.4

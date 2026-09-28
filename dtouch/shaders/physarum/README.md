@@ -115,7 +115,14 @@ at amounts above 0):
   own key names), `fractal.mix_full` (compose `u_mix` = min(1, amount /
   mix_full)), `fractal.level_norms` (the per-level bright-end rule),
   `fractal.bloom` (the attention zones' schedule), `fractal.px_ref` (the
-  length unit), and each look's `fractal` amount (`defaults.fractal` = 0).
+  length unit), and two amounts per look:
+  - `fractal`: what the look LANDS on. 0 on every built-in and in
+    `defaults`: a look (and panic) arrives on the depth relief with the
+    fractal off.
+  - `fractal_on`: the look's tuned amount with the fractal ON, the value a
+    host's "depth + fractal" step (the desktop's and the browser's H third
+    step) sets. `defaults.fractal_on` = 0 (the stock organism); a look
+    without `fractal_on` uses its own `fractal`, then the default's.
   `level_norms.ema` is the per-level smoothing (the stock norm's EMA).
   Python source: `dtouch.physarum` FRACTAL / FRACTAL_MIX_FULL / FRACTAL_NL /
   BLOOM / bloom_zones, `dtouch.modes.physarum` LOOK_FRACTAL.

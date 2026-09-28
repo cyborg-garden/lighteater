@@ -64,7 +64,8 @@
   "evolve": 0.5,
   "react": 0.7,
   "depth": 0.6,
-  "fractal": 0.0
+  "fractal": 0.0,
+  "fractal_on": 0.0
  },
  "builtin": {
   "veinwork": {
@@ -80,7 +81,8 @@
    "evolve": 0.5,
    "react": 0.7,
    "depth": 0.9,
-   "fractal": 1.0
+   "fractal": 0.0,
+   "fractal_on": 1.0
   },
   "amoeba": {
    "point_bg": "cells",
@@ -95,7 +97,8 @@
    "evolve": 0.6,
    "react": 0.8,
    "depth": 0.5,
-   "fractal": 0.7
+   "fractal": 0.0,
+   "fractal_on": 0.7
   },
   "ghost": {
    "point_bg": "haze",
@@ -110,7 +113,8 @@
    "evolve": 0.75,
    "react": 0.6,
    "depth": 0.6,
-   "fractal": 0.85
+   "fractal": 0.0,
+   "fractal_on": 0.85
   },
   "lightning": {
    "point_bg": "web",
@@ -125,7 +129,8 @@
    "evolve": 0.6,
    "react": 0.8,
    "depth": 0.9,
-   "fractal": 0.9
+   "fractal": 0.0,
+   "fractal_on": 0.9
   },
   "breath": {
    "point_bg": "haze",
@@ -140,7 +145,8 @@
    "evolve": 0.7,
    "react": 0.5,
    "depth": 0.5,
-   "fractal": 0.7
+   "fractal": 0.0,
+   "fractal_on": 0.7
   }
  },
  "palette_names": [

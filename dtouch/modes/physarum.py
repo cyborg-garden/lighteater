@@ -22,7 +22,8 @@ at the gesture. Z casts a random regime (points + look params from the
 validated bands) with a forced hop and melt surge — the slot machine that
 always pays.
 
-**Depth** (LOOK section; H steps flat, relief, relief + fractal) lights the
+**Depth** (LOOK section; H steps flat, relief, relief + fractal; every look
+lands on the relief with the fractal off) lights the
 picture as a relief of the trail under a key light that orbits slowly and drops on the
 bass, so veins read as lit tubes stacked over one another. Both engines
 render it (tonemap.frag on the GPU, dtouch.physarum.relief on numpy).
@@ -149,11 +150,16 @@ DEPTH_FEEL_CURVE = False
 
 
 # ----- fractal veins (browser demo 2026-09-25, moved into the shared unit) ---
-# Per-look amounts, as the browser page tuned them; the tuning table itself
-# is dtouch.physarum.FRACTAL (the engine reads it). A custom look without
-# an amount gets FRACTAL_DEFAULT, the stock organism, so a look saved before
-# this existed renders as it always did. Panic recalls safe_look()
-# (veinwork), so on the GPU it lands on veinwork's amount, 1.0.
+# Per-look amounts WHEN ON, as the browser page tuned them; the tuning table
+# itself is dtouch.physarum.FRACTAL (the engine reads it). Every look LANDS
+# on depth with the fractal off (owner, 2026-09-28: "the default when you
+# land on physarum should be depth but not fractal ... at least until we
+# could make the fractal one look really cool"), so a built-in carries
+# `fractal` = FRACTAL_DEFAULT (0) and this amount as `fractal_on`: the value
+# H's third step brings in (look_applied). A custom look without an amount
+# gets FRACTAL_DEFAULT, the stock organism, so a look saved before this
+# existed renders as it always did. Panic recalls safe_look() (veinwork):
+# depth, fractal off, and H's third step at veinwork's 1.0.
 LOOK_FRACTAL = {"veinwork": 1.0, "amoeba": 0.7, "ghost": 0.85,
                 "lightning": 0.9, "breath": 0.7}
 FRACTAL_DEFAULT = 0.0
@@ -266,23 +272,23 @@ class PhysarumMode:
         "veinwork":  dict(point_bg="veins", point_fg="fingers", palette="arctic",
                           matte="auto", food=0.35, gain=1.0, decay=0.94, exposure=3.5,
                           weave=0.7, evolve=0.5, react=0.7, depth=LOOK_DEPTH["veinwork"],
-                          fractal=LOOK_FRACTAL["veinwork"]),
+                          fractal=FRACTAL_DEFAULT, fractal_on=LOOK_FRACTAL["veinwork"]),
         "amoeba":    dict(point_bg="cells", point_fg="storm", palette="fire",
                           matte="motion", food=0.50, gain=1.1, decay=0.92, exposure=3.0,
                           weave=0.55, evolve=0.6, react=0.8, depth=LOOK_DEPTH["amoeba"],
-                          fractal=LOOK_FRACTAL["amoeba"]),
+                          fractal=FRACTAL_DEFAULT, fractal_on=LOOK_FRACTAL["amoeba"]),
         "ghost":     dict(point_bg="haze", point_fg="web", palette="mono",
                           matte="person", food=0.60, gain=0.9, decay=0.96, exposure=4.5,
                           weave=0.5, evolve=0.75, react=0.6, depth=LOOK_DEPTH["ghost"],
-                          fractal=LOOK_FRACTAL["ghost"]),
+                          fractal=FRACTAL_DEFAULT, fractal_on=LOOK_FRACTAL["ghost"]),
         "lightning": dict(point_bg="web", point_fg="fingers", palette="violet",
                           matte="edges", food=0.45, gain=1.4, decay=0.90, exposure=3.0,
                           weave=0.65, evolve=0.6, react=0.8, depth=LOOK_DEPTH["lightning"],
-                          fractal=LOOK_FRACTAL["lightning"]),
+                          fractal=FRACTAL_DEFAULT, fractal_on=LOOK_FRACTAL["lightning"]),
         "breath":    dict(point_bg="haze", point_fg="cells", palette="aurora",
                           matte="luma", food=0.30, gain=0.8, decay=0.95, exposure=4.0,
                           weave=0.45, evolve=0.7, react=0.5, depth=LOOK_DEPTH["breath"],
-                          fractal=LOOK_FRACTAL["breath"]),
+                          fractal=FRACTAL_DEFAULT, fractal_on=LOOK_FRACTAL["breath"]),
     }
 
     # apply="reset" merges a look over these; matte / video_bg / video_mix are
@@ -290,7 +296,7 @@ class PhysarumMode:
     DEFAULTS = dict(point_bg="veins", point_fg="fingers", palette="arctic",
                     food=0.35, gain=1.0, decay=0.94, exposure=3.5, grain=0.2,
                     weave=0.6, evolve=0.5, react=0.7, depth=DEPTH_DEFAULT,
-                    fractal=FRACTAL_DEFAULT)
+                    fractal=FRACTAL_DEFAULT, fractal_on=FRACTAL_DEFAULT)
 
     _UI_DEFAULTS = dict(ph_matte_idx=0, ph_food=0.35, ph_video_bg=False,
                         ph_video_mix=0.5, ph_point_bg_idx=0, ph_point_fg_idx=2,
@@ -694,11 +700,27 @@ class PhysarumMode:
             return False
         return getattr(self.pf, "fractal_error", None) is None
 
+    def look_applied(self, cfg):
+        """The shell applied look `cfg` (boot, a bank recall, panic). The
+        look lands at its own `fractal` (0 on every built-in: depth only);
+        H's third step takes its `fractal_on`, the amount it is tuned to
+        with the fractal ON. A look without `fractal_on` (a custom one, or
+        one saved before this existed) brings back its own `fractal`, else
+        DEFAULTS'. The landed slider value is marked seen, so
+        _follow_fractal does not take the look's 0 for a new on-amount."""
+        v = cfg.get("fractal_on", cfg.get("fractal", self.DEFAULTS["fractal_on"]))
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            v = FRACTAL_DEFAULT
+        self._fractal_last = min(max(v, 0.0), 1.0) if np.isfinite(v) else FRACTAL_DEFAULT
+        self._fractal_seen = float(self._ui("ph_fractal", FRACTAL_DEFAULT))
+
     def _follow_fractal(self):
         """Keep h's restore value on the live look: a change to ph_fractal
-        that h did not make (a look was applied, the slider moved) becomes
-        the amount the third step brings back, zero included, as the
-        browser's applyLook does."""
+        that neither h nor a look made (the slider moved) becomes the
+        amount the third step brings back, zero included. A look's own
+        on-amount arrives through look_applied."""
         v = float(self._ui("ph_fractal", FRACTAL_DEFAULT))
         if self._fractal_seen is None or v != self._fractal_seen:
             self._fractal_last = v
