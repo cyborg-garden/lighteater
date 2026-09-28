@@ -6,8 +6,10 @@ single source of truth. Payload: the behavior POINTS the shaders' uniforms
 are fed from, the mode's DEFAULTS and BUILTIN looks, every palette as
 both its gradient stops and the resolved 256-entry RGB LUT, the relief
 light's orbit + bass rake (`depth`), and the fractal veins' tuning table,
-host rules and attention-zone schedule (`fractal`; each look carries its own
-`fractal` amount in `builtin` / `defaults`).
+host rules and attention-zone schedule (`fractal`). Each look in `builtin` /
+`defaults` carries two amounts: `fractal`, what it lands on (0: every look
+lands on depth only), and `fractal_on`, its tuned amount for the host's
+depth + fractal step (H's third press).
 
     python -m dtouch.physarum_looks        # rewrite looks.json
 
