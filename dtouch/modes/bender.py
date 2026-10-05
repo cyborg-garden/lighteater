@@ -257,8 +257,11 @@ class BenderMode:
         RESPAWN_MAX_S. After MAX_LOSSES in a row bending stops and the camera
         shows unbent, with a toast saying so.
 
-        A stalled bend is hard evidence that this size is too big for this
-        machine: the budget steps down one notch at once (Governor.step_down).
+        A stalled bend is evidence that this size is too big for this
+        machine, and the budget steps down one notch at once
+        (Governor.step_down), unless the worker's own bends were quick
+        (under a third of STALL_S): then the stall was a hiccup, not the
+        size. The live camera shows until a fresh worker bends again.
         Nothing else about it lingers (a fresh worker starts with no bend
         time, and the governor waits for its first measurement), and a worker
         that never got ready says nothing about the size at all."""
@@ -266,8 +269,10 @@ class BenderMode:
             self.worker_deaths += 1
         else:
             self.stalls += 1
-        if reason == "stalled":
+        # bend_ms still holds the lost worker's measurement here
+        if reason == "stalled" and (self.bend_ms == 0 or self.bend_ms > STALL_S * 1000 / 3):
             self.governor.step_down()
+        self.bent = None                      # never a frozen bend while waiting
         self.backoff.fail()
         self.decode_fails += 1
         self.inflight = None
@@ -521,25 +526,25 @@ class BenderMode:
         """Camera frame (pre-mirrored by the shell) -> the newest bent frame,
         post, settle -> RGB at host.res."""
         now = time.perf_counter()
-        io0 = self._io()
+        w0 = self._worker
+        io0 = getattr(w0, "io_s", 0.0)
         out = self._step(frame_bgr, audio_levels, dt, now)
-        io1 = self._io()
         # the governor's cost signal: this mode's own time on the main
         # thread, not the loop's frame rate (which includes the camera wait),
         # and not the time spent waiting on the worker's pipes (io_s: the
         # select for room to write, the read of a reply as it arrives, and a
         # failed submit's whole deadline). Pickling the frame and copying it
         # in grow with the pixels, so they stay in.
-        io = io1[1] - io0[1] if io1[0] == io0[0] else io1[1]
+        # the worker at the start (even if it was lost during the step, its
+        # failed submit is waiting) plus any fresh one started since
+        io = getattr(w0, "io_s", 0.0) - io0
+        if self._worker is not None and self._worker is not w0:
+            io += getattr(self._worker, "io_s", 0.0)
         cost = (time.perf_counter() - now - io) * 1000
         dt = max(0.0, float(dt or 0.0))
         k = 1 - math.exp(-dt / STEP_TAU_S) if dt > 0 else 0.0
         self.step_ms += (cost - self.step_ms) * k
         return out
-
-    def _io(self):
-        w = self._worker
-        return (id(w), getattr(w, "io_s", 0.0)) if w is not None else (None, 0.0)
 
     def _governing(self, now):
         """The governor only listens while bends are really happening: a

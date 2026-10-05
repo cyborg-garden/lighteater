@@ -697,3 +697,148 @@ def test_giving_up_shows_the_live_camera_not_the_last_bend(tmp_path, monkeypatch
         out = m.step(white, None, 1 / 30)
     assert out.mean() > 250
     m.stop()
+
+
+
+# ---------- audit round 6 ----------
+
+def _fake_clock(monkeypatch):
+    import types
+    clock = [0.0]
+    monkeypatch.setattr(M, "time", types.SimpleNamespace(perf_counter=lambda: clock[0]))
+    return clock
+
+
+def test_one_off_stalls_on_a_fast_machine_keep_the_size(tmp_path, monkeypatch):
+    clock = _fake_clock(monkeypatch)
+    stall = [False]
+
+    class Quick:
+        def __init__(self):
+            self.ready, self.dead, self.busy, self.pid, self.born = True, False, False, None, clock[0]
+            self.p, self.io_s = None, 0.0
+
+        def submit(self, fn, rgb, *a):
+            self.p = rgb
+            return True
+
+        def poll(self):
+            if self.dead:
+                return "dead", None
+            if self.p is None or stall[0]:
+                return None
+            p, self.p = self.p, None
+            return "ok", dict(status="ok", rgb=p, bend_ms=10.0)
+
+        def kill(self):
+            self.dead = True
+
+    monkeypatch.setattr(M, "make_worker", Quick)
+    host = _booted(tmp_path)
+    m = host.mode
+    m.start(host)
+    frame = _scene(180, 320)
+
+    def run(secs):
+        for _ in range(int(secs * 30)):
+            clock[0] += 1 / 30
+            m.step(frame, None, 1 / 30)
+    run(3)
+    for _ in range(2):                                # two one-off hiccups
+        stall[0] = True
+        run(M.STALL_S + 0.2)
+        stall[0] = False
+        run(10)
+    assert m.stalls == 2 and not m.gave_up
+    assert m.governor.budget == B.MAX_PIXELS and m.governor.steps == 0
+    m.stop()
+
+
+def test_a_failed_submit_is_not_charged_to_the_step(tmp_path, monkeypatch):
+    """scratchpad/audit6/failed_submit.py: the 0.5 s a frozen worker costs
+    submit is waiting, and the worker is lost in the same step."""
+    clock = _fake_clock(monkeypatch)
+    stuck = [False]
+
+    class W:
+        def __init__(self):
+            self.ready, self.dead, self.busy, self.pid, self.born = True, False, False, None, clock[0]
+            self.io_s, self.p = 0.0, None
+
+        def submit(self, fn, rgb, *a):
+            if stuck[0]:
+                clock[0] += 0.5
+                self.io_s += 0.5                      # as ProcessWorker does
+                self.dead = True
+                return False
+            self.p = rgb
+            return True
+
+        def poll(self):
+            if self.dead:
+                return "dead", None
+            if self.p is None:
+                return None
+            p, self.p = self.p, None
+            return "ok", dict(status="ok", rgb=p, bend_ms=10.0)
+
+        def kill(self):
+            self.dead = True
+
+    monkeypatch.setattr(M, "make_worker", W)
+    host = _booted(tmp_path)
+    m = host.mode
+    m.start(host)
+    frame = _scene(180, 320)
+    for _ in range(90):
+        clock[0] += 1 / 30
+        m.step(frame, None, 1 / 30)
+    before = m.step_ms
+    stuck[0] = True
+    clock[0] += 1 / 30
+    m.step(frame, None, 1 / 30)
+    assert m.worker_deaths == 1
+    assert m.step_ms - before < 1.0
+    m.stop()
+
+
+def test_a_lost_worker_shows_the_live_camera_while_waiting(tmp_path, monkeypatch):
+    clock = _fake_clock(monkeypatch)
+    dying = [False]
+
+    class W:
+        def __init__(self):
+            self.ready, self.dead, self.busy, self.pid, self.born = True, False, False, None, clock[0]
+            self.io_s, self.p = 0.0, None
+
+        def submit(self, fn, rgb, *a):
+            self.p = np.full_like(rgb, 7)
+            return True
+
+        def poll(self):
+            if dying[0]:
+                return "dead", None
+            if self.p is None:
+                return None
+            p, self.p = self.p, None
+            return "ok", dict(status="ok", rgb=p, bend_ms=10.0)
+
+        def kill(self):
+            self.dead = True
+
+    monkeypatch.setattr(M, "make_worker", W)
+    host = _booted(tmp_path)
+    m = host.mode
+    m.start(host)
+    frame = _scene(180, 320)
+    for _ in range(30):
+        clock[0] += 1 / 30
+        m.step(frame, None, 1 / 30)
+    dying[0] = True
+    clock[0] += 1 / 30
+    m.step(frame, None, 1 / 30)                       # lost; waiting to respawn
+    assert m._worker is None and not m.gave_up
+    clock[0] += 1 / 30
+    out = m.step(np.full_like(frame, 255), None, 1 / 30)
+    assert out.mean() > 250
+    m.stop()
