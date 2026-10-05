@@ -57,7 +57,7 @@ BANK_SLOTS = 9
 BANK_SEED_MAX = 7
 
 AUTO_RELEASE_KEYS = frozenset(
-    [ord(c) for c in "0123456789[],.-=_+xpdo"]
+    [ord(c) for c in "0123456789[],.-=_+xpdoje"]
 )
 
 REC_DIR = "out"        # recordings land beside the launch dir; created on first take

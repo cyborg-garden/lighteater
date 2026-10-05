@@ -59,7 +59,7 @@ menu entirely.
 
 ## Modes
 
-Three instruments share the window, the presets, the keys and the recorder:
+Four instruments share the window, the presets, the keys and the recorder:
 
 - **Particles** (`p`) — camera → matte → a flowing cloud of glowing particles. The original.
 - **Dither** (`d`) — the dither pipeline as the picture itself (see below).
@@ -69,17 +69,24 @@ Three instruments share the window, the presets, the keys and the recorder:
   toward. `X` swaps body/field mid-set; `B` pours a burst of agents onto you; `W` ripples
   the whole organism outward. Inspired by Sage Jenson's *36 Points* and Etienne
   Jacob's *interactive-physarum* (independent implementation of the Jones model).
+- **Circuit Bender** (`j`): live JPEG databending. Every frame gets a sensor bend, is
+  encoded as a real JPEG, has its bytes bent, and is decoded again. It lands on
+  *bent cam*: a pink or green cast, slipped bands and posterised bursts, the way a
+  circuit-bent camera looks. `E` steps through the ten bends, `B` sets how hard,
+  `X` split, `C` copy runs, `K` pixel sort, `L` long exposure. Inspired by CyberShot
+  Cam by @lixofuturista / @cebolander (independent implementation from the JPEG
+  standard). The browser page runs the same bends, byte for byte.
 
 `m` opens the **home menu** — the same one you booted into: your camera behind a scrim,
 rendered through 1-bit blue-noise dither, with a card per mode. `,`/`.` move, `Enter`
 commits, or just click a card. `Esc` leaves the running mode alone — except at boot, where
 there's nothing behind the menu to go back to, so it commits the selection instead of
-dropping you into a mode you never chose. You never need the menu mid-set: `p`, `d` and `o`
-switch directly from any state. Switching draws a still boot card rather than a gray flash,
+dropping you into a mode you never chose. You never need the menu mid-set: `p`, `d`, `o` and
+`j` switch directly from any state. Switching draws a still boot card rather than a gray flash,
 and coming back to a mode you've already used finds it exactly as you left it.
 
 From the command line, `--mode dithergirl` boots into Dither, `--mode physarum` boots
-into Physarum, and `--still photo.jpg`
+into Physarum, `--mode bender` into Circuit Bender, and `--still photo.jpg`
 loads a still image and implies it; `--flock` and `--glitch` boot Particles with those layers
 already on.
 

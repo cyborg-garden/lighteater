@@ -319,6 +319,10 @@ def draw_menu(img, cam_bgr, cards, sel, boot=False):
         title = c.title.upper()
         tp = int(1.0 * uu)
         tw = text_size(title, tp)[0]
+        pad = int(0.6 * uu)
+        if tw > cw - 2 * pad:                # CIRCUIT BENDER: shrink to fit
+            tp = max(int(tp * (cw - 2 * pad) / tw), 8)
+            tw = text_size(title, tp)[0]
         put_outlined(img, title, (x + (cw - tw) // 2, y0 + int(2.2 * uu)), tp,
                      color if (selected or not c.enabled) else INK)
         bp = int(0.62 * uu)

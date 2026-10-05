@@ -1,0 +1,184 @@
+{
+ "title": "Circuit Bender",
+ "key": "j",
+ "blurb": "live jpeg\ndatabending",
+ "accent": [90,225,255],
+ "effects": ["bent","zigzag","erosion","remap","swap","chroma","stack","hclock","vclock","adc"],
+ "effect_titles": {
+  "bent": "bent cam",
+  "zigzag": "zigzag perm",
+  "erosion": "dqt erosion",
+  "remap": "dht remap",
+  "swap": "scan swap",
+  "chroma": "chroma amp",
+  "stack": "stack",
+  "hclock": "h clock",
+  "vclock": "v clock",
+  "adc": "adc bits"
+ },
+ "jpeg_effects": ["zigzag","erosion","remap","swap","chroma","stack"],
+ "sensor_effects": ["bent","hclock","vclock","adc"],
+ "looks": {
+  "bent": {
+   "effect": "bent",
+   "amount": 0.65,
+   "split": 0,
+   "sort": "off",
+   "copy": 0,
+   "long": 0
+  },
+  "zigzag": {
+   "effect": "zigzag",
+   "amount": 0.5,
+   "split": 0,
+   "sort": "off",
+   "copy": 0,
+   "long": 0
+  },
+  "erosion": {
+   "effect": "erosion",
+   "amount": 0.75,
+   "split": 0,
+   "sort": "off",
+   "copy": 0,
+   "long": 0
+  },
+  "remap": {
+   "effect": "remap",
+   "amount": 0.5,
+   "split": 0,
+   "sort": "off",
+   "copy": 0,
+   "long": 0
+  },
+  "swap": {
+   "effect": "swap",
+   "amount": 0.5,
+   "split": 0,
+   "sort": "off",
+   "copy": 0,
+   "long": 0
+  },
+  "chroma": {
+   "effect": "chroma",
+   "amount": 0.35,
+   "split": 4,
+   "sort": "off",
+   "copy": 0,
+   "long": 0
+  },
+  "stack": {
+   "effect": "stack",
+   "amount": 0.6,
+   "split": 0,
+   "sort": "off",
+   "copy": 0.5,
+   "long": 0
+  },
+  "hclock": {
+   "effect": "hclock",
+   "amount": 0.5,
+   "split": 0,
+   "sort": "off",
+   "copy": 0,
+   "long": 0
+  },
+  "vclock": {
+   "effect": "vclock",
+   "amount": 0.5,
+   "split": 0,
+   "sort": "off",
+   "copy": 0,
+   "long": 0
+  },
+  "adc": {
+   "effect": "adc",
+   "amount": 0.5,
+   "split": 0,
+   "sort": "off",
+   "copy": 0,
+   "long": 0
+  }
+ },
+ "look_names": ["bent","zigzag","erosion","remap","swap","chroma","stack","hclock","vclock","adc"],
+ "safe_look": "bent",
+ "ladders": {
+  "amount": [0.25,0.5,0.75,1],
+  "amount_nudge": 0.05,
+  "long": [0,3,5,10],
+  "sort": ["off","rows","columns"],
+  "split": [0,4,10],
+  "copy": [0,0.5,1],
+  "copy_names": {
+   "0": "off",
+   "0.5": "some",
+   "1": "lots"
+  }
+ },
+ "sort_band": [60,205],
+ "settle_s": {
+  "bent": 0,
+  "zigzag": 0,
+  "erosion": 0,
+  "remap": 0.35,
+  "swap": 0.08,
+  "chroma": 0,
+  "stack": 0.12,
+  "hclock": 0,
+  "vclock": 0,
+  "adc": 0
+ },
+ "cut": {
+  "every_s": 1.8,
+  "onset_gap_s": 0.3,
+  "drift_per_s": 0.015,
+  "tempo": {
+   "swap": {
+    "cut": 3,
+    "drift": 1
+   }
+  },
+  "touch_cuts": 4
+ },
+ "working": {
+  "max_pixels": 786432,
+  "min_pixels": 76800
+ },
+ "governor": {
+  "min_rate": 15,
+  "slow_s": 3,
+  "step_down": 0.7
+ },
+ "backoff": {
+  "clean_after": 3,
+  "backoff": 0.6,
+  "recover": 0.05,
+  "floor": 0.1
+ },
+ "sound": {
+  "lift": 0.3,
+  "auto_sway": 0.2,
+  "auto_sway_s": 14
+ },
+ "jpeg": {
+  "quality": 0.8,
+  "block": 16
+ },
+ "bent_mix": {
+  "cast": 1,
+  "slip": 0.7,
+  "adc": 0.45
+ },
+ "stack_weights": [
+  ["swap",0.6],
+  ["remap",0.45],
+  ["chroma",0.3],
+  ["erosion",0.3],
+  ["zigzag",0.4]
+ ],
+ "loop": {
+  "max_bend_hz": 30,
+  "stall_s": 1.5,
+  "max_abandoned": 2
+ }
+}
