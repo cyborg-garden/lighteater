@@ -459,6 +459,14 @@ def test_lost_workers_back_off_and_then_give_up(tmp_path, monkeypatch):
     assert gaps == [min(M.RESPAWN_MAX_S, M.RESPAWN_GAP_S * 2 ** i)
                     for i in range(M.MAX_LOSSES - 1)]
     assert any("stopped bending" in h for h in hints)
+    # the camera shows at the full working size, not a shrunk one
+    host.res = (1920, 1080)
+    m.governor.budget = B.MIN_PIXELS
+    big = _scene(1080, 1920)
+    out = m.step(big, None, 1 / 30)
+    assert out.shape == (1080, 1920, 3)
+    assert m.size == B.working_size(1920, 1080, 1920, 1080, B.MAX_PIXELS)[:2]
+    host.res = (320, 180)
     made = _DeadWorker.made
     for _ in range(100):
         m._kick(frame, t)
@@ -479,23 +487,105 @@ def test_a_stall_is_rate_limited_and_counts_as_slow(tmp_path, monkeypatch):
     m._settle(M.STALL_S + 0.1)
     assert m.stalls == 1 and m._worker is None
     assert m.respawn_at >= M.STALL_S + 0.1 + M.RESPAWN_GAP_S
-    assert m.bend_ms >= M.STALL_S * 1000             # the governor sees it
-    assert 1000.0 / m.bend_ms < B.MIN_RATE
+    assert m.governor.slow > 0                        # fed to the governor, once
+    assert m.bend_ms == 0                             # and nothing lingers
     m.stop()
 
 
-def test_the_governor_runs_with_stalls_and_no_bends(tmp_path, monkeypatch):
+def test_a_stall_reaches_the_governor_once_and_waits_say_nothing(tmp_path, monkeypatch):
+    """Audit round 4: a stale stall ratcheted the size to the floor during
+    respawn waits and after giving up. Each stall is one slow sample; the
+    waits between workers are silent."""
+    import types
+    clock = [0.0]
+    monkeypatch.setattr(M, "time", types.SimpleNamespace(perf_counter=lambda: clock[0]))
+    monkeypatch.setattr(M, "make_worker", _SilentWorker)
     host = _booted(tmp_path)
     m = host.mode
-    monkeypatch.setattr(M, "make_worker", _SilentWorker)
-    monkeypatch.setattr(M, "STALL_S", 0.0)
     m.start(host)
     calls = []
-    monkeypatch.setattr(m.governor, "step", lambda *a, **k: calls.append(a) or False)
+    real = m.governor.step
+    monkeypatch.setattr(m.governor, "step", lambda *a, **k: calls.append(a) or real(*a, **k))
     frame = _scene(180, 320)
-    import time
-    for _ in range(40):
-        m.step(frame, None, 0.1)
-        time.sleep(0.005)
-    assert m.bends == 0 and m.stalls >= 1 and calls
+    for _ in range(int(120 * 30)):                    # two minutes at 30 fps
+        clock[0] += 1 / 30
+        m.step(frame, None, 1 / 30)
+    assert m.gave_up and m.bends == 0
+    slow = [c for c in calls if c[1] == 0.0]
+    assert len(slow) == m.stalls == M.MAX_LOSSES
+    assert m.governor.budget >= B.MAX_PIXELS * B.STEP_DOWN ** 2   # not the floor
     m.stop()
+
+
+def test_a_slow_startup_says_nothing_to_the_governor(tmp_path, monkeypatch):
+    host = _booted(tmp_path)
+    m = host.mode
+    monkeypatch.setattr(M, "make_worker", _NeverReady)
+    m.start(host)
+    m._kick(_scene(180, 320), M.STARTUP_S + 1)
+    assert m.stalls == 1 and m.governor.slow == 0 and m.bend_ms == 0
+    m.stop()
+
+
+
+# ---------- the worker never blocks the app (audit round 4) ----------
+
+def test_a_frozen_worker_cannot_block_submit():
+    """A worker that stops reading (SIGSTOP here) makes submit give up in
+    bounded time instead of blocking the display on the pipe."""
+    import os
+    import signal
+    import time
+    from dtouch import bender_worker as W
+    w = W.ProcessWorker()
+    try:
+        end = time.time() + 60
+        while not w.ready and time.time() < end:
+            w.poll()
+            time.sleep(0.01)
+        os.kill(w.pid, signal.SIGSTOP)
+        big = np.zeros((1080, 1920, 3), np.uint8)    # far past a pipe buffer
+        t0 = time.perf_counter()
+        ok = w.submit(np.copy, big)
+        took = time.perf_counter() - t0
+        assert not ok and w.dead
+        assert took < W.SEND_S + 0.5
+    finally:
+        w.kill()
+
+
+def test_pipe_copy_is_not_counted_as_the_steps_cost(tmp_path, monkeypatch):
+    host = _booted(tmp_path)
+    m = host.mode
+    m.start(host)
+
+    class Slow:
+        io_s = 0.0
+        dead, ready = False, True
+
+    w = Slow()
+    m._worker = w
+
+    def fake_step(*a):
+        import time
+        time.sleep(0.05)
+        w.io_s += 0.05                                # all of it was pipe copy
+        return np.zeros((180, 320, 3), np.uint8)
+    monkeypatch.setattr(m, "_step", fake_step)
+    for _ in range(30):
+        m.step(None, None, 1 / 30)
+    assert m.step_ms < 5
+    m._worker = None
+    m.stop()
+
+
+def test_a_killed_thread_worker_never_holds_up_exit():
+    import threading
+    from dtouch.bender_worker import ThreadWorker
+    gate = threading.Event()
+    w = ThreadWorker()
+    w.submit(gate.wait, 30)
+    w.kill()
+    ts = [t for t in threading.enumerate() if t.name == "bender-thread"]
+    assert ts and all(t.daemon for t in ts)
+    gate.set()

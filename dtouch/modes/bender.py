@@ -220,6 +220,7 @@ class BenderMode:
         self.next_due = -math.inf     # the rate deadline (see _kick)
         self.respawn_at = None        # when a lost worker comes back
         self.losses = 0               # workers lost in a row (died or stalled)
+        self.last_result_at = -math.inf   # when the worker last answered
         self.gave_up = False          # MAX_LOSSES in a row: bending is off
         self.worker_deaths = 0
         self.step_ms = 0.0            # this mode's main-thread cost, smoothed
@@ -248,18 +249,24 @@ class BenderMode:
             self._worker = None
         self._reset()
 
-    def _lose_worker(self, now, stalled):
-        """The worker died (killed, crashed, out of memory) or stalled: kill
-        what is left, count a failed bend, and bring a fresh one back after
-        RESPAWN_GAP_S, doubling with every loss in a row up to RESPAWN_MAX_S.
-        After MAX_LOSSES in a row bending stops and the camera shows unbent,
-        with a toast saying so. A stall also tells the governor the bends are
-        slow: a bend that never came back reported no time of its own."""
-        if stalled:
-            self.stalls += 1
-            self.bend_ms = max(self.bend_ms, STALL_S * 1000)
-        else:
+    def _lose_worker(self, now, reason):
+        """The worker died (killed, crashed, out of memory, stopped reading),
+        stalled on a bend, or never got ready ("died", "stalled", "startup"):
+        kill what is left, count a failed bend, and bring a fresh one back
+        after RESPAWN_GAP_S, doubling with every loss in a row up to
+        RESPAWN_MAX_S. After MAX_LOSSES in a row bending stops and the camera
+        shows unbent, with a toast saying so.
+
+        A stalled bend is fed to the governor once, as STALL_S seconds of
+        bends too slow to count: it reported no time of its own. Nothing else
+        about it lingers (a fresh worker starts with no bend time), and a
+        worker that never got ready says nothing about the size at all."""
+        if reason == "died":
             self.worker_deaths += 1
+        else:
+            self.stalls += 1
+        if reason == "stalled":
+            self.governor.step(STALL_S, 0.0, 0.0)
         self.backoff.fail()
         self.decode_fails += 1
         self.inflight = None
@@ -438,13 +445,14 @@ class BenderMode:
         got = self._worker.poll() if self._worker is not None else ("dead", None)
         if got is None:
             if now - at > STALL_S:
-                self._lose_worker(now, stalled=True)
+                self._lose_worker(now, "stalled")
             return
         status, r = got
         if status == "dead":
-            self._lose_worker(now, stalled=False)
+            self._lose_worker(now, "died")
             return
         self.inflight = None
+        self.last_result_at = now
         if status != "ok":                # the bend raised: a failed bend
             self.backoff.fail()
             self.decode_fails += 1
@@ -471,16 +479,17 @@ class BenderMode:
         if self._worker is None and self.respawn_at is not None and now >= self.respawn_at:
             self._worker = make_worker()
             self.respawn_at = None
+            self.bend_ms = 0.0                # the new worker's bends say, not the old
         worker = self._worker
         if worker is None or self.inflight is not None:
             return
         if not worker.ready:
             if worker.poll() == ("dead", None):   # died while starting up
-                self._lose_worker(now, stalled=False)
+                self._lose_worker(now, "died")
                 return
             if not worker.ready:
                 if now - getattr(worker, "born", now) > STARTUP_S:
-                    self._lose_worker(now, stalled=True)
+                    self._lose_worker(now, "startup")
                 return
         # the rate is a deadline, not a minimum gap: a gap check on a loop
         # near MAX_BEND_HZ waits a whole extra frame half the time
@@ -499,7 +508,7 @@ class BenderMode:
         seed = B.touch_seed(self.cut.cuts) if effect in SENSOR_EFFECTS else self.cut.seed
         if not worker.submit(bend_frame, rgb, effect, a, seed, self.cut.phase,
                              self.t, self.sort()):
-            self._lose_worker(now, stalled=False)
+            self._lose_worker(now, "died")    # dead, or not reading its pipe
             return
         # a clean frame: the back-off ran out of tries and sent it unbent
         self.inflight = (now, a == 0 and want > 0)
@@ -511,14 +520,33 @@ class BenderMode:
         """Camera frame (pre-mirrored by the shell) -> the newest bent frame,
         post, settle -> RGB at host.res."""
         now = time.perf_counter()
+        io0 = self._io()
         out = self._step(frame_bgr, audio_levels, dt, now)
+        io1 = self._io()
         # the governor's cost signal: this mode's own time on the main
-        # thread, not the loop's frame rate (which includes the camera wait)
-        cost = (time.perf_counter() - now) * 1000
+        # thread, not the loop's frame rate (which includes the camera wait),
+        # and not the frame's copy through the worker's pipe (which does not
+        # grow with what the governor can shrink fast enough to matter)
+        io = io1[1] - io0[1] if io1[0] == io0[0] else io1[1]
+        cost = (time.perf_counter() - now - io) * 1000
         dt = max(0.0, float(dt or 0.0))
         k = 1 - math.exp(-dt / STEP_TAU_S) if dt > 0 else 0.0
         self.step_ms += (cost - self.step_ms) * k
         return out
+
+    def _io(self):
+        w = self._worker
+        return (id(w), getattr(w, "io_s", 0.0)) if w is not None else (None, 0.0)
+
+    def _governing(self, now):
+        """The governor only listens while bends are really happening: a
+        live worker with a bend in flight, or one that answered lately.
+        During a respawn wait, or after giving up, there is nothing to
+        measure, and a stale number would ratchet the size down."""
+        w = self._worker
+        return (w is not None and not w.dead and w.ready
+                and (self.inflight is not None
+                     or now - self.last_result_at < 2 * GOVERN_EVERY_S))
 
     def _step(self, frame_bgr, audio_levels, dt, now):
         rw, rh = self.host.res
@@ -539,12 +567,19 @@ class BenderMode:
         k = 1 - math.exp(-dt / RATE_TAU_S) if dt > 0 else 0.0
         self.rate += (inst - self.rate) * k
         self.since_govern += dt
-        if self.since_govern >= GOVERN_EVERY_S and (self.bends > 0 or self.stalls > 0):
+        if self.since_govern >= GOVERN_EVERY_S and self._governing(now):
             # what the worker could sustain, not what the camera allowed
             capacity = 1000.0 / self.bend_ms if self.bend_ms > 0 else math.inf
             self.governor.step(self.since_govern, capacity, self.step_ms)
+        if self.since_govern >= GOVERN_EVERY_S:
             self.since_govern = 0.0
 
+        if self.gave_up:
+            # bending is off: the camera, unbent, at the full working size,
+            # not whatever size the failing worker had been shrunk to
+            fh, fw = frame_bgr.shape[:2]
+            w, h, _ = B.working_size(rw, rh, fw, fh, B.MAX_PIXELS)
+            self.size = (w, h)
         pic = self.bent
         if pic is None or pic.shape[:2] != (self.size[1], self.size[0]):
             # nothing bent at this size yet: the camera, unbent, not black
