@@ -53,7 +53,8 @@ rerun with nothing changed is a no-op.
   `touch_cuts`), `working` (the pixel budget), `governor` (`max_step_ms` is
   the desktop's main-thread cost ceiling; the page may ignore it), `backoff`,
   `sound`, `jpeg` (encode quality 0..1 and the copy block), `bent_mix`,
-  `stack_weights`, and `loop` (bend rate limit, stall window, abandoned cap).
+  `stack_weights`, and `loop` (bend rate, stall window, and the lost-worker
+  respawn gap, its doubling ceiling and the losses in a row before giving up).
   `loop.max_bend_hz` is the bend rate, held by a deadline rather than a
   minimum gap: `next_due = max(next_due + 1 / max_bend_hz, now - 1 /
   max_bend_hz)`, and a bend starts when `now >= next_due`. A gap check

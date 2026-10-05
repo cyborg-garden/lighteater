@@ -94,16 +94,34 @@ def test_a_slow_camera_does_not_shrink_the_picture(tmp_path, monkeypatch):
     m.stop()
 
 
+def _until(worker, timeout=60):
+    import time
+    end = time.time() + timeout
+    while time.time() < end:
+        got = worker.poll()
+        if got is not None:
+            return got
+        time.sleep(0.01)
+    raise AssertionError("no reply")
+
+
 def test_bends_run_in_a_process_by_default():
-    from concurrent.futures import ProcessPoolExecutor
+    from dtouch.bender_worker import ProcessWorker
+    import time
     assert M.POOL == "process"
-    pool = M._make_pool()
+    w = M.make_worker()
     try:
-        assert isinstance(pool, ProcessPoolExecutor)
-        r = pool.submit(M.bend_frame, _scene(), "swap", 0.6, 3, 0.2).result(timeout=60)
-        assert r["status"] == "ok"
+        assert isinstance(w, ProcessWorker)
+        assert not w.submit(M.bend_frame, _scene(), "swap", 0.6, 3, 0.2) or w.ready
+        end = time.time() + 60
+        while not w.ready and time.time() < end:
+            w.poll()
+            time.sleep(0.01)
+        assert w.submit(M.bend_frame, _scene(), "swap", 0.6, 3, 0.2)
+        status, r = _until(w)
+        assert status == "ok" and r["status"] == "ok"
     finally:
-        pool.shutdown(wait=True)
+        w.kill()
 
 
 def test_a_slow_bend_does_shrink_the_picture(tmp_path, monkeypatch):
@@ -179,7 +197,9 @@ def _rate(tmp_path, monkeypatch, loop_hz, seconds=3.0):
         m._kick(frame, t)
         if m.inflight is not before:
             submits += 1
-            m.inflight = None                        # pretend it finished
+            while m._worker.poll() is None:          # let it finish at once
+                pass
+            m.inflight = None
         t += 1.0 / loop_hz
     m.stop()
     return submits / seconds
@@ -247,8 +267,7 @@ def test_a_killed_worker_is_replaced_and_bending_goes_on(tmp_path):
     m.start(host)
     frame = _scene(180, 320)
     assert _wait_bends(m, frame, 2) >= 2
-    for pid in list(m._pool._processes):
-        os.kill(pid, signal.SIGKILL)
+    os.kill(m._worker.pid, signal.SIGKILL)
     assert _wait_bends(m, frame, 3) >= 3              # no exception, bends again
     assert m.worker_deaths >= 1
     m.stop()
@@ -279,9 +298,10 @@ def test_the_worker_exits_when_its_parent_is_killed(tmp_path):
     code = (
         "import sys, time\n"
         "from dtouch.modes import bender as M\n"
-        "pool = M._make_pool()\n"
-        "pool.submit(M._warm).result(timeout=60)\n"
-        "print(list(pool._processes)[0], flush=True)\n"
+        "w = M.make_worker()\n"
+        "while not w.ready:\n"
+        "    w.poll(); time.sleep(0.01)\n"
+        "print(w.pid, flush=True)\n"
         "time.sleep(60)\n")
     env = dict(os.environ, PYTHONPATH=os.getcwd())
     parent = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE,
@@ -302,3 +322,180 @@ def test_the_worker_exits_when_its_parent_is_killed(tmp_path):
     finally:
         if parent.poll() is None:
             parent.kill()
+
+
+
+# ---------- quitting never hangs (audit round 3) ----------
+
+def _run_exits(code, timeout=30):
+    """Run `code` in a fresh interpreter; True when it exits by itself in time."""
+    import os
+    import subprocess
+    import sys
+    env = dict(os.environ, PYTHONPATH=os.getcwd())
+    p = subprocess.Popen([sys.executable, "-c", code], env=env,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        out, _ = p.communicate(timeout=timeout)
+        return p.returncode == 0, out
+    except subprocess.TimeoutExpired:
+        p.kill()
+        return False, "hung"
+
+
+MIDWRITE = (
+    "import time, numpy as np\n"
+    "from dtouch.bender_worker import ProcessWorker\n"
+    "w = ProcessWorker()\n"
+    "while not w.ready:\n"
+    "    w.poll(); time.sleep(0.01)\n"
+    "w.submit(np.ones, 30_000_000)\n"      # a 240 MB reply: a long write back
+    "time.sleep({delay})\n"
+    "w.kill()\n"
+    "print('killed', flush=True)\n")
+
+
+@pytest.mark.parametrize("delay", [0.08, 0.3, 0.6])
+def test_a_kill_mid_reply_never_hangs_the_exit(delay):
+    """ProcessPoolExecutor hung forever here: its manager thread blocked in
+    recv on the half-written reply, and interpreter exit joined it."""
+    ok, out = _run_exits(MIDWRITE.format(delay=delay))
+    assert ok, out
+
+
+def test_stopping_during_a_large_bend_exits_promptly():
+    code = (
+        "import time, pathlib, tempfile\n"
+        "import numpy as np\n"
+        "import sys; sys.path.insert(0, 'tests')\n"
+        "from test_bender import _booted, _scene\n"
+        "host = _booted(pathlib.Path(tempfile.mkdtemp()))\n"
+        "host.res = (1920, 1080)\n"
+        "m = host.mode\n"
+        "frame = _scene(1080, 1920)\n"
+        "for i in range(6):\n"
+        "    m.start(host)\n"
+        "    end = time.time() + 0.3 + 0.2 * i\n"
+        "    while time.time() < end:\n"
+        "        m.step(frame, None, 1 / 30); time.sleep(0.005)\n"
+        "    t = time.perf_counter(); m.stop()\n"
+        "    assert time.perf_counter() - t < 2, 'slow stop'\n"
+        "print('done', flush=True)\n")
+    ok, out = _run_exits(code, timeout=90)
+    assert ok, out
+
+
+# ---------- lost workers: rate-limited, backed off, given up ----------
+
+class _DeadWorker:
+    """A worker that is ready and then always dead."""
+    made = 0
+
+    def __init__(self):
+        _DeadWorker.made += 1
+        self.ready, self.dead, self.busy, self.pid = True, False, False, None
+
+    def submit(self, *a):
+        return True
+
+    def poll(self):
+        return "dead", None
+
+    def kill(self):
+        self.dead = True
+
+
+class _SilentWorker(_DeadWorker):
+    """Ready, takes the job, never replies (a stall)."""
+
+    def poll(self):
+        return None
+
+
+class _NeverReady(_DeadWorker):
+    """Started, never ready, never dead (a hung import)."""
+
+    def __init__(self):
+        super().__init__()
+        self.ready, self.born = False, 0.0
+
+    def poll(self):
+        return None
+
+
+def test_a_worker_that_never_gets_ready_is_lost(tmp_path, monkeypatch):
+    host = _booted(tmp_path)
+    m = host.mode
+    monkeypatch.setattr(M, "make_worker", _NeverReady)
+    m.start(host)
+    frame = _scene(180, 320)
+    m._kick(frame, M.STARTUP_S - 1)
+    assert m._worker is not None and m.stalls == 0
+    m._kick(frame, M.STARTUP_S + 1)
+    assert m._worker is None and m.stalls == 1 and m.respawn_at is not None
+    m.stop()
+
+
+def test_lost_workers_back_off_and_then_give_up(tmp_path, monkeypatch):
+    host = _booted(tmp_path)
+    m = host.mode
+    monkeypatch.setattr(M, "make_worker", _DeadWorker)
+    m.start(host)
+    hints = []
+    monkeypatch.setattr(host.hud.toasts, "hint", lambda t, *a, **k: hints.append(t))
+    frame = _scene(180, 320)
+    t, gaps, last = 0.0, [], None
+    for _ in range(4000):                            # 400 s at 10 Hz
+        m._kick(frame, t)
+        if m.inflight is not None:
+            m._settle(t)
+        if m.respawn_at is not None and m.respawn_at != last:
+            gaps.append(round(m.respawn_at - t, 3))
+            last = m.respawn_at
+        t += 0.1
+        if m.gave_up:
+            break
+    assert m.gave_up and m.losses == M.MAX_LOSSES
+    assert gaps == [min(M.RESPAWN_MAX_S, M.RESPAWN_GAP_S * 2 ** i)
+                    for i in range(M.MAX_LOSSES - 1)]
+    assert any("stopped bending" in h for h in hints)
+    made = _DeadWorker.made
+    for _ in range(100):
+        m._kick(frame, t)
+        t += 0.1
+    assert _DeadWorker.made == made                 # no respawn after giving up
+    assert m.step(frame, None, 1 / 30).shape == (180, 320, 3)   # camera shows
+    m.stop()
+
+
+def test_a_stall_is_rate_limited_and_counts_as_slow(tmp_path, monkeypatch):
+    host = _booted(tmp_path)
+    m = host.mode
+    monkeypatch.setattr(M, "make_worker", _SilentWorker)
+    m.start(host)
+    frame = _scene(180, 320)
+    m._kick(frame, 0.0)
+    assert m.inflight is not None
+    m._settle(M.STALL_S + 0.1)
+    assert m.stalls == 1 and m._worker is None
+    assert m.respawn_at >= M.STALL_S + 0.1 + M.RESPAWN_GAP_S
+    assert m.bend_ms >= M.STALL_S * 1000             # the governor sees it
+    assert 1000.0 / m.bend_ms < B.MIN_RATE
+    m.stop()
+
+
+def test_the_governor_runs_with_stalls_and_no_bends(tmp_path, monkeypatch):
+    host = _booted(tmp_path)
+    m = host.mode
+    monkeypatch.setattr(M, "make_worker", _SilentWorker)
+    monkeypatch.setattr(M, "STALL_S", 0.0)
+    m.start(host)
+    calls = []
+    monkeypatch.setattr(m.governor, "step", lambda *a, **k: calls.append(a) or False)
+    frame = _scene(180, 320)
+    import time
+    for _ in range(40):
+        m.step(frame, None, 0.1)
+        time.sleep(0.005)
+    assert m.bends == 0 and m.stalls >= 1 and calls
+    m.stop()

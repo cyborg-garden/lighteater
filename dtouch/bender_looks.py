@@ -111,7 +111,9 @@ def looks_payload():
         "bent_mix": {k: _num(v) for k, v in BENT_MIX.items()},
         "stack_weights": [[name, w] for name, w in STACK_WEIGHTS],
         "loop": {"max_bend_hz": mode.MAX_BEND_HZ, "stall_s": mode.STALL_S,
-                 "max_abandoned": mode.MAX_ABANDONED},
+                 "respawn_gap_s": mode.RESPAWN_GAP_S,
+                 "respawn_max_s": mode.RESPAWN_MAX_S,
+                 "max_losses": mode.MAX_LOSSES},
     }
 
 

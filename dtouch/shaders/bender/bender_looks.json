@@ -180,6 +180,8 @@
  "loop": {
   "max_bend_hz": 30,
   "stall_s": 1.5,
-  "max_abandoned": 2
+  "respawn_gap_s": 1.0,
+  "respawn_max_s": 16.0,
+  "max_losses": 6
  }
 }
