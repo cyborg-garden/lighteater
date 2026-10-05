@@ -161,6 +161,16 @@ class Governor:
         self.steps += 1
         return True
 
+    def step_down(self):
+        """One notch down now, on hard evidence (a bend that never came
+        back); True when the budget changed."""
+        if self.budget <= MIN_PIXELS:
+            return False
+        self.slow = 0.0
+        self.budget = max(MIN_PIXELS, int(math.floor(self.budget * STEP_DOWN + 0.5)))
+        self.steps += 1
+        return True
+
 
 # ----- the cut clock -----
 

@@ -23,8 +23,10 @@ The protocol, one job at a time:
 The worker watches its parent and exits the moment the app is gone (a force
 quit never runs shutdown), so it is never left re-parented to launchd.
 
-`io_s` counts the seconds the app spent copying frames through the pipes,
-so the mode can leave that copy out of its own cost (the governor's signal).
+`io_s` counts the seconds the app spent waiting on the pipes (for room to
+write, for a reply to finish arriving, and the whole of a failed submit), so
+the mode can leave the waiting out of its own cost (the governor's signal).
+Pickling and the copies themselves stay in: they grow with the pixels.
 
 `ThreadWorker` has the same interface over a daemon thread, for tests that
 monkeypatch the bend (a spawned process cannot see the patch).
@@ -34,7 +36,7 @@ from __future__ import annotations
 import multiprocessing
 import multiprocessing.process
 import os
-import select
+import selectors
 import struct
 import threading
 import time
@@ -109,18 +111,22 @@ class ProcessWorker:
     def _write(self, buf, deadline):
         fd = self._req_w.fileno()
         view = memoryview(buf)
-        while view:
-            left = deadline - time.perf_counter()
-            if left <= 0:
-                return False
-            _, ready, _ = select.select([], [fd], [], left)
-            if not ready:
-                return False
-            try:
-                n = os.write(fd, view)
-            except BlockingIOError:
-                continue
-            view = view[n:]
+        with selectors.DefaultSelector() as sel:
+            sel.register(fd, selectors.EVENT_WRITE)
+            while view:
+                left = deadline - time.perf_counter()
+                if left <= 0:
+                    return False
+                t0 = time.perf_counter()
+                ready = sel.select(left)
+                self.io_s += time.perf_counter() - t0
+                if not ready:
+                    return False
+                try:
+                    n = os.write(fd, view)
+                except BlockingIOError:
+                    continue
+                view = view[n:]
         return True
 
     def submit(self, fn, *args):
@@ -130,12 +136,15 @@ class ProcessWorker:
             return False
         self._job += 1
         t0 = time.perf_counter()
+        io0 = self.io_s
         try:
-            ok = self._write(_frame((self._job, fn, args)), t0 + SEND_S)
+            buf = _frame((self._job, fn, args))
+            ok = self._write(buf, time.perf_counter() + SEND_S)
         except (BrokenPipeError, OSError):
             ok = False
-        self.io_s += time.perf_counter() - t0
         if not ok:
+            # the whole failed attempt is waiting, not work
+            self.io_s = io0 + (time.perf_counter() - t0)
             self.dead = True                  # a half-written job: unusable
             return False
         self.busy = True
@@ -145,16 +154,16 @@ class ProcessWorker:
         """('ok', result), ('error', why), ('dead', None), or None (nothing
         yet). Reads only what has started to arrive; never waits."""
         while not self.dead:
-            t0 = time.perf_counter()
             try:
                 if not self._rep_r.poll(0):
                     break
-                msg = self._rep_r.recv()
+                t0 = time.perf_counter()
+                data = self._rep_r.recv_bytes()   # waits for the rest to arrive
+                self.io_s += time.perf_counter() - t0
+                msg = ForkingPickler.loads(data)  # work: grows with the pixels
             except (EOFError, OSError):
                 self.dead = True
                 break
-            finally:
-                self.io_s += time.perf_counter() - t0
             if msg == ("ready",):
                 self.ready = True
                 continue

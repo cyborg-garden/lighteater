@@ -257,16 +257,17 @@ class BenderMode:
         RESPAWN_MAX_S. After MAX_LOSSES in a row bending stops and the camera
         shows unbent, with a toast saying so.
 
-        A stalled bend is fed to the governor once, as STALL_S seconds of
-        bends too slow to count: it reported no time of its own. Nothing else
-        about it lingers (a fresh worker starts with no bend time), and a
-        worker that never got ready says nothing about the size at all."""
+        A stalled bend is hard evidence that this size is too big for this
+        machine: the budget steps down one notch at once (Governor.step_down).
+        Nothing else about it lingers (a fresh worker starts with no bend
+        time, and the governor waits for its first measurement), and a worker
+        that never got ready says nothing about the size at all."""
         if reason == "died":
             self.worker_deaths += 1
         else:
             self.stalls += 1
         if reason == "stalled":
-            self.governor.step(STALL_S, 0.0, 0.0)
+            self.governor.step_down()
         self.backoff.fail()
         self.decode_fails += 1
         self.inflight = None
@@ -525,8 +526,10 @@ class BenderMode:
         io1 = self._io()
         # the governor's cost signal: this mode's own time on the main
         # thread, not the loop's frame rate (which includes the camera wait),
-        # and not the frame's copy through the worker's pipe (which does not
-        # grow with what the governor can shrink fast enough to matter)
+        # and not the time spent waiting on the worker's pipes (io_s: the
+        # select for room to write, the read of a reply as it arrives, and a
+        # failed submit's whole deadline). Pickling the frame and copying it
+        # in grow with the pixels, so they stay in.
         io = io1[1] - io0[1] if io1[0] == io0[0] else io1[1]
         cost = (time.perf_counter() - now - io) * 1000
         dt = max(0.0, float(dt or 0.0))
@@ -545,6 +548,7 @@ class BenderMode:
         measure, and a stale number would ratchet the size down."""
         w = self._worker
         return (w is not None and not w.dead and w.ready
+                and self.bend_ms > 0          # no measurement, no verdict
                 and (self.inflight is not None
                      or now - self.last_result_at < 2 * GOVERN_EVERY_S))
 
@@ -569,7 +573,7 @@ class BenderMode:
         self.since_govern += dt
         if self.since_govern >= GOVERN_EVERY_S and self._governing(now):
             # what the worker could sustain, not what the camera allowed
-            capacity = 1000.0 / self.bend_ms if self.bend_ms > 0 else math.inf
+            capacity = 1000.0 / self.bend_ms
             self.governor.step(self.since_govern, capacity, self.step_ms)
         if self.since_govern >= GOVERN_EVERY_S:
             self.since_govern = 0.0
@@ -580,6 +584,7 @@ class BenderMode:
             fh, fw = frame_bgr.shape[:2]
             w, h, _ = B.working_size(rw, rh, fw, fh, B.MAX_PIXELS)
             self.size = (w, h)
+            self.bent = None                  # never the last bend, frozen
         pic = self.bent
         if pic is None or pic.shape[:2] != (self.size[1], self.size[0]):
             # nothing bent at this size yet: the camera, unbent, not black

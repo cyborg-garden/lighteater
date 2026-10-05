@@ -487,12 +487,12 @@ def test_a_stall_is_rate_limited_and_counts_as_slow(tmp_path, monkeypatch):
     m._settle(M.STALL_S + 0.1)
     assert m.stalls == 1 and m._worker is None
     assert m.respawn_at >= M.STALL_S + 0.1 + M.RESPAWN_GAP_S
-    assert m.governor.slow > 0                        # fed to the governor, once
+    assert m.governor.steps == 1                      # hard evidence: one notch
     assert m.bend_ms == 0                             # and nothing lingers
     m.stop()
 
 
-def test_a_stall_reaches_the_governor_once_and_waits_say_nothing(tmp_path, monkeypatch):
+def test_a_stall_steps_down_once_and_waits_say_nothing(tmp_path, monkeypatch):
     """Audit round 4: a stale stall ratcheted the size to the floor during
     respawn waits and after giving up. Each stall is one slow sample; the
     waits between workers are silent."""
@@ -511,9 +511,9 @@ def test_a_stall_reaches_the_governor_once_and_waits_say_nothing(tmp_path, monke
         clock[0] += 1 / 30
         m.step(frame, None, 1 / 30)
     assert m.gave_up and m.bends == 0
-    slow = [c for c in calls if c[1] == 0.0]
-    assert len(slow) == m.stalls == M.MAX_LOSSES
-    assert m.governor.budget >= B.MAX_PIXELS * B.STEP_DOWN ** 2   # not the floor
+    assert m.stalls == M.MAX_LOSSES
+    assert calls == []                                # waits say nothing
+    assert m.governor.steps == M.MAX_LOSSES           # one notch per stall, no more
     m.stop()
 
 
@@ -523,7 +523,7 @@ def test_a_slow_startup_says_nothing_to_the_governor(tmp_path, monkeypatch):
     monkeypatch.setattr(M, "make_worker", _NeverReady)
     m.start(host)
     m._kick(_scene(180, 320), M.STARTUP_S + 1)
-    assert m.stalls == 1 and m.governor.slow == 0 and m.bend_ms == 0
+    assert m.stalls == 1 and m.governor.steps == 0 and m.bend_ms == 0
     m.stop()
 
 
@@ -589,3 +589,111 @@ def test_a_killed_thread_worker_never_holds_up_exit():
     ts = [t for t in threading.enumerate() if t.name == "bender-thread"]
     assert ts and all(t.daemon for t in ts)
     gate.set()
+
+
+
+# ---------- a slow machine shrinks, it does not give up (audit round 5) ----------
+
+def _slow_machine(tmp_path, monkeypatch, t_full, secs=120):
+    """Bend time proportional to pixels, `t_full` seconds at MAX_PIXELS
+    (scratchpad/audit5/slow_machine.py)."""
+    import types
+    clock = [0.0]
+    monkeypatch.setattr(M, "time", types.SimpleNamespace(perf_counter=lambda: clock[0]))
+
+    class Slow:
+        def __init__(self):
+            self.ready, self.dead, self.busy, self.pid, self.born = True, False, False, None, clock[0]
+            self.done, self.io_s = None, 0.0
+
+        def submit(self, fn, rgb, *a):
+            self.busy, self.rgb = True, rgb
+            self.ms = rgb.shape[0] * rgb.shape[1] / B.MAX_PIXELS * t_full * 1000
+            self.done = clock[0] + self.ms / 1000
+            return True
+
+        def poll(self):
+            if self.dead:
+                return "dead", None
+            if self.done is not None and clock[0] >= self.done:
+                self.done, self.busy = None, False
+                return "ok", dict(status="ok", rgb=self.rgb, bend_ms=self.ms)
+            return None
+
+        def kill(self):
+            self.dead = True
+
+    monkeypatch.setattr(M, "make_worker", Slow)
+    host = _booted(tmp_path)
+    host.res = (1920, 1080)
+    m = host.mode
+    m.start(host)
+    frame = _scene(1080, 1920)
+    for _ in range(int(secs * 30)):
+        clock[0] += 1 / 30
+        m.step(frame, None, 1 / 30)
+    got = dict(gave_up=m.gave_up, budget=m.governor.budget, steps=m.governor.steps,
+               bends=m.bends, stalls=m.stalls)
+    m.stop()                                          # (stop resets the governor)
+    return got
+
+
+@pytest.mark.parametrize("t_full", [0.05, 0.3, 1.0, 1.6, 2.0, 4.0])
+def test_a_slow_machine_shrinks_to_what_it_can_bend(tmp_path, monkeypatch, t_full):
+    """e243122 gave up at 1.6 s and beyond: a stall added only a third of the
+    governor's window, and a fresh worker's empty measurement reset it."""
+    got = _slow_machine(tmp_path, monkeypatch, t_full)
+    assert not got["gave_up"]
+    fit = min(1.0, (1000 / B.MIN_RATE) / (t_full * 1000))   # the share that keeps up
+    want = max(B.MIN_PIXELS, B.MAX_PIXELS * fit)
+    assert got["budget"] <= want / B.STEP_DOWN + 1   # shrunk to (about) what it can do
+    if fit >= 1:
+        assert got["steps"] == 0                     # a fast machine keeps full size
+    assert got["bends"] > 100
+
+
+def test_giving_up_shows_the_live_camera_not_the_last_bend(tmp_path, monkeypatch):
+    import types
+    clock = [0.0]
+    monkeypatch.setattr(M, "time", types.SimpleNamespace(perf_counter=lambda: clock[0]))
+    phase = ["ok"]
+
+    class W:
+        def __init__(self):
+            self.ready, self.dead, self.busy, self.pid, self.born = True, False, False, None, clock[0]
+            self.p, self.io_s = None, 0.0
+
+        def submit(self, fn, rgb, *a):
+            self.p = np.full_like(rgb, 7)             # a distinctive bent frame
+            return True
+
+        def poll(self):
+            if phase[0] == "die":
+                return "dead", None
+            if self.p is None:
+                return None
+            p, self.p = self.p, None
+            return "ok", dict(status="ok", rgb=p, bend_ms=10.0)
+
+        def kill(self):
+            self.dead = True
+
+    monkeypatch.setattr(M, "make_worker", W)
+    host = _booted(tmp_path)
+    m = host.mode
+    m.start(host)
+    frame = _scene(180, 320)
+    for _ in range(60):
+        clock[0] += 1 / 30
+        m.step(frame, None, 1 / 30)
+    phase[0] = "die"
+    for _ in range(int(90 * 30)):
+        clock[0] += 1 / 30
+        m.step(frame, None, 1 / 30)
+    assert m.gave_up
+    white = np.full_like(frame, 255)
+    for _ in range(5):
+        clock[0] += 1 / 30
+        out = m.step(white, None, 1 / 30)
+    assert out.mean() > 250
+    m.stop()
