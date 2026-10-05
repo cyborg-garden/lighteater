@@ -124,14 +124,18 @@ def working_size(out_w, out_h, src_w=math.inf, src_h=math.inf, budget=MAX_PIXELS
     return w, h, out_w / w
 
 
-# The budget governor: below MIN_RATE bends a second, or below MIN_DISPLAY
-# display frames a second, for SLOW_S seconds straight, the pixel budget
-# steps down by STEP_DOWN, never under MIN_PIXELS. It only steps down, so the
-# picture never pumps between two sizes. (The display check is the desktop's:
-# its bends share a machine with the display loop. The browser's governor
-# watches the bend rate only.)
+# The budget governor: below MIN_RATE bends a second, or with the mode's own
+# per-frame cost on the main thread above MAX_STEP_MS, for SLOW_S seconds
+# straight, the pixel budget steps down by STEP_DOWN, never under MIN_PIXELS.
+# It only steps down, so the picture never pumps between two sizes.
+# On the desktop both signals are costs, not frame rates: `rate` is what the
+# worker could sustain (1000 / its own bend time) and `step_ms` is measured
+# inside the mode's step. The shell's loop also waits on the camera, and a
+# dim-light camera at 8 frames a second would otherwise ratchet the picture
+# down to the floor through either. (The browser's governor watches the
+# achieved bend rate only.)
 MIN_RATE = 15
-MIN_DISPLAY = 20
+MAX_STEP_MS = 12
 SLOW_S = 3
 STEP_DOWN = 0.7
 
@@ -142,12 +146,13 @@ class Governor:
         self.slow = 0.0
         self.steps = 0
 
-    def step(self, dt, rate, display=math.inf):
-        """dt seconds of a running loop at `rate` bends a second and `display`
-        frames a second; True when the budget changed."""
+    def step(self, dt, rate, step_ms=0.0):
+        """dt seconds of a running loop at `rate` bends a second, the mode's
+        step costing `step_ms` on the main thread; True when the budget
+        changed."""
         if not dt > 0:
             return False
-        slow = rate < MIN_RATE or display < MIN_DISPLAY
+        slow = rate < MIN_RATE or step_ms > MAX_STEP_MS
         self.slow = self.slow + min(dt, 1) if slow else 0.0
         if self.slow < SLOW_S or self.budget <= MIN_PIXELS:
             return False

@@ -101,7 +101,7 @@ def looks_payload():
             "touch_cuts": B.TOUCH_CUTS,
         },
         "working": {"max_pixels": B.MAX_PIXELS, "min_pixels": B.MIN_PIXELS},
-        "governor": {"min_rate": B.MIN_RATE, "min_display": B.MIN_DISPLAY,
+        "governor": {"min_rate": B.MIN_RATE, "max_step_ms": B.MAX_STEP_MS,
                      "slow_s": B.SLOW_S, "step_down": B.STEP_DOWN},
         "backoff": {"clean_after": B.CLEAN_AFTER, "backoff": B.BACKOFF,
                     "recover": B.RECOVER, "floor": B.FLOOR},

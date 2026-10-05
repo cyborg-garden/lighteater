@@ -42,8 +42,10 @@ from __future__ import annotations
 import io
 import math
 import multiprocessing
+import os
+import threading
 import time
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import BrokenExecutor, ProcessPoolExecutor, ThreadPoolExecutor
 
 import cv2
 import numpy as np
@@ -65,6 +67,8 @@ ACCENT = (255, 225, 90)
 MAX_BEND_HZ = 30          # bends a second at most; past this the eye gains nothing
 STALL_S = 1.5             # a bend still unsettled after this is abandoned
 MAX_ABANDONED = 2         # workers left with a stalled bend, at most
+RESPAWN_GAP_S = 1.0       # a dead worker is replaced at most this often
+STEP_TAU_S = 1.0          # smoothing for the step's own main-thread cost
 # Where bends run: "process" (the default, off the display's GIL) or
 # "thread" (tests that monkeypatch bend_frame, which a process cannot see).
 POOL = "process"
@@ -145,7 +149,7 @@ def bend_frame(rgb, effect, amount, seed, phase=0.0, t=0.0, sort="off",
     t2 = time.perf_counter()
     timing = dict(parse_fail=parse_fail, sensor_ms=sensor_ms,
                   enc_ms=(t1 - t0) * 1000 - sensor_ms, dec_ms=(t2 - t1) * 1000,
-                  sort_ms=0.0)
+                  sort_ms=0.0, bend_ms=(t2 - t0) * 1000)
     if out is None or out.shape[:2] != rgb.shape[:2]:
         return dict(status="decode", **timing)
     out = np.array(out)               # writable: the sort works in place
@@ -155,12 +159,28 @@ def bend_frame(rgb, effect, amount, seed, phase=0.0, t=0.0, sort="off",
         s0 = time.perf_counter()
         sort_runs(out, B.SORT_BAND[0], B.SORT_BAND[1], sort)
         timing["sort_ms"] = (time.perf_counter() - s0) * 1000
+        timing["bend_ms"] += timing["sort_ms"]
     return dict(status="ok", rgb=out, **timing)
 
 
 def _warm():
     """Imported-and-ready check for a fresh worker process."""
     return True
+
+
+def _watch_parent(parent):
+    """In the worker: exit the moment the app is gone. A force-quit app (or
+    a crash) never shuts its pool down, and an orphaned worker would sit
+    re-parented to launchd forever."""
+    while True:
+        if os.getppid() != parent:
+            os._exit(0)
+        time.sleep(0.5)
+
+
+def _worker_init(parent):
+    threading.Thread(target=_watch_parent, args=(parent,), daemon=True,
+                     name="bender-parent-watch").start()
 
 
 def _make_pool():
@@ -170,9 +190,29 @@ def _make_pool():
     if POOL == "thread":
         return ThreadPoolExecutor(max_workers=1, thread_name_prefix="bender")
     pool = ProcessPoolExecutor(max_workers=1,
-                               mp_context=multiprocessing.get_context("spawn"))
+                               mp_context=multiprocessing.get_context("spawn"),
+                               initializer=_worker_init, initargs=(os.getpid(),))
     pool.submit(_warm)                # start the import now, not on bend 1
     return pool
+
+
+def _end_pool(pool):
+    """Let a pool go without waiting on it: queued bends are cancelled and a
+    worker process (stalled or not) is terminated, so neither a stall nor
+    quitting the app waits on a bend. A thread cannot be killed: a thread
+    pool's worker finishes its bend on its own and is dropped."""
+    if pool is None:
+        return
+    procs = list((getattr(pool, "_processes", None) or {}).values())
+    try:
+        pool.shutdown(wait=False, cancel_futures=True)
+    except Exception:                 # noqa: BLE001: a broken pool still goes
+        pass
+    for p in procs:
+        try:
+            p.terminate()
+        except Exception:             # noqa: BLE001: already gone
+            pass
 
 
 def cover_crop(frame, aspect):
@@ -223,6 +263,12 @@ class BenderMode:
         self.inflight = None          # (future, submitted_at, clean)
         self.abandoned = []           # futures given up on, still running
         self.last_submit = -math.inf
+        self.next_due = -math.inf     # the rate deadline (see _kick)
+        self.respawn_at = None        # when a dead worker's pool comes back
+        self.last_respawn = -math.inf
+        self.worker_deaths = 0
+        self.step_ms = 0.0            # this mode's main-thread cost, smoothed
+        self.bend_ms = 0.0            # the worker's own time per bend, smoothed
         self.t = 0.0
         self.bends = 0
         self.rate = 0.0
@@ -231,7 +277,6 @@ class BenderMode:
         self.last_timing = {}
         self.bass = 0.0
         self.onset = B.Onset()
-        self.display = 0.0            # display frames a second, smoothed
         self._rng = np.random.default_rng()
 
     # ----- lifecycle -----
@@ -241,12 +286,23 @@ class BenderMode:
         self._pool = _make_pool()
 
     def stop(self):
-        """Idempotent (DESIGN.md §2.2). The worker thread is released without
-        waiting: a bend in flight finishes on its own and is dropped."""
-        if self._pool is not None:
-            self._pool.shutdown(wait=False, cancel_futures=True)
-            self._pool = None
+        """Idempotent (DESIGN.md §2.2). Nothing waits on a bend: the worker
+        is terminated (_end_pool)."""
+        _end_pool(self._pool)
+        self._pool = None
         self._reset()
+
+    def _worker_died(self, now):
+        """The worker process died (killed, crashed, out of memory) and the
+        pool is broken for good. Count it as a failed bend and bring a fresh
+        pool back, at most every RESPAWN_GAP_S."""
+        self.worker_deaths += 1
+        self.backoff.fail()
+        self.decode_fails += 1
+        self.inflight = None
+        _end_pool(self._pool)
+        self._pool = None
+        self.respawn_at = max(now, self.last_respawn + RESPAWN_GAP_S)
 
     def on_resize(self, w, h):
         pass                          # the working size follows host.res per step
@@ -408,12 +464,18 @@ class BenderMode:
             self.inflight = None
             try:
                 r = fut.result()
+            except BrokenExecutor:
+                self._worker_died(now)
+                return
             except Exception:             # noqa: BLE001: a bend never kills the show
                 self.backoff.fail()
                 self.decode_fails += 1
                 return
             self.bends += 1
             self.last_timing = r
+            if "bend_ms" in r:
+                b = float(r["bend_ms"])
+                self.bend_ms = b if self.bend_ms == 0 else self.bend_ms + (b - self.bend_ms) * 0.2
             if r.get("parse_fail"):
                 self.parse_fails += 1
             if r["status"] == "ok":
@@ -426,22 +488,28 @@ class BenderMode:
                     self.decode_fails += 1
                 self.backoff.fail()
         elif now - at > STALL_S:
-            # a thread cannot be killed: leave it to finish on a pool of its
-            # own and bend on a fresh one, at most MAX_ABANDONED at a time
+            # give up on it and bend on a fresh pool: a worker process is
+            # terminated (_end_pool); a worker thread cannot be, so it is
+            # left to finish on its own, at most MAX_ABANDONED at a time
             self.abandoned = [f for f in self.abandoned if not f.done()]
             if len(self.abandoned) >= MAX_ABANDONED:
                 return
             self.stalls += 1
             self.abandoned.append(fut)
             self.inflight = None
-            if self._pool is not None:
-                self._pool.shutdown(wait=False)
-                self._pool = _make_pool()
+            _end_pool(self._pool)
+            self._pool = _make_pool()
 
     def _kick(self, frame, now):
+        if self._pool is None and self.respawn_at is not None and now >= self.respawn_at:
+            self._pool = _make_pool()
+            self.respawn_at = None
+            self.last_respawn = now
         if self._pool is None or self.inflight is not None:
             return
-        if now - self.last_submit < 1.0 / MAX_BEND_HZ:
+        # the rate is a deadline, not a minimum gap: a gap check on a loop
+        # near MAX_BEND_HZ waits a whole extra frame half the time
+        if now < self.next_due:
             return
         w, h = self._working_size(frame)
         if (w, h) != self.size:
@@ -454,17 +522,33 @@ class BenderMode:
         want = self.live_amount()
         a = self.backoff.amount(want)
         seed = B.touch_seed(self.cut.cuts) if effect in SENSOR_EFFECTS else self.cut.seed
-        fut = self._pool.submit(bend_frame, rgb, effect, a, seed,
-                                self.cut.phase, self.t, self.sort())
+        try:
+            fut = self._pool.submit(bend_frame, rgb, effect, a, seed,
+                                    self.cut.phase, self.t, self.sort())
+        except BrokenExecutor:
+            self._worker_died(now)
+            return
         # a clean frame: the back-off ran out of tries and sent it unbent
         self.inflight = (fut, now, a == 0 and want > 0)
         self.last_submit = now
+        period = 1.0 / MAX_BEND_HZ
+        self.next_due = max(self.next_due + period, now - period)
 
     def step(self, frame_bgr, audio_levels, dt):
         """Camera frame (pre-mirrored by the shell) -> the newest bent frame,
         post, settle -> RGB at host.res."""
-        rw, rh = self.host.res
         now = time.perf_counter()
+        out = self._step(frame_bgr, audio_levels, dt, now)
+        # the governor's cost signal: this mode's own time on the main
+        # thread, not the loop's frame rate (which includes the camera wait)
+        cost = (time.perf_counter() - now) * 1000
+        dt = max(0.0, float(dt or 0.0))
+        k = 1 - math.exp(-dt / STEP_TAU_S) if dt > 0 else 0.0
+        self.step_ms += (cost - self.step_ms) * k
+        return out
+
+    def _step(self, frame_bgr, audio_levels, dt, now):
+        rw, rh = self.host.res
         dt = max(0.0, float(dt or 0.0))
         self.t += dt
         onset = False
@@ -481,11 +565,11 @@ class BenderMode:
         inst = (self.bends - bends_before) / dt if dt > 0 else 0.0
         k = 1 - math.exp(-dt / RATE_TAU_S) if dt > 0 else 0.0
         self.rate += (inst - self.rate) * k
-        if dt > 0:
-            self.display += (1.0 / dt - self.display) * k
         self.since_govern += dt
         if self.since_govern >= GOVERN_EVERY_S and self.bends > 0:
-            self.governor.step(self.since_govern, self.rate, self.display)
+            # what the worker could sustain, not what the camera allowed
+            capacity = 1000.0 / self.bend_ms if self.bend_ms > 0 else math.inf
+            self.governor.step(self.since_govern, capacity, self.step_ms)
             self.since_govern = 0.0
 
         pic = self.bent

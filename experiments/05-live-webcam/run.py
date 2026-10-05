@@ -41,6 +41,7 @@ MOTION (flocking) and SIGNAL (glitch + dithering). Click a header to open it.
 from __future__ import annotations
 
 import argparse
+import multiprocessing
 
 from dtouch import presets as _presets
 from dtouch.camera import list_cameras
@@ -221,4 +222,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # Circuit Bender bends in a spawned worker process; a frozen build must
+    # not re-run the launcher in it
+    multiprocessing.freeze_support()
     main()

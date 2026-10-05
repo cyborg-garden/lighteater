@@ -146,7 +146,7 @@
  },
  "governor": {
   "min_rate": 15,
-  "min_display": 20,
+  "max_step_ms": 12,
   "slow_s": 3,
   "step_down": 0.7
  },

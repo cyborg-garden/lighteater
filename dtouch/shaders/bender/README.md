@@ -50,14 +50,17 @@ rerun with nothing changed is a no-op.
   `effects` in E's order with `effect_titles`, `jpeg_effects`,
   `sensor_effects`, `looks` (one per effect) with `look_names` and
   `safe_look`, `ladders`, `sort_band`, `settle_s`, `cut` (the cut clock and
-  `touch_cuts`), `working` (the pixel budget), `governor` (`min_display` is
-  the desktop's display-rate floor; the page may ignore it), `backoff`,
+  `touch_cuts`), `working` (the pixel budget), `governor` (`max_step_ms` is
+  the desktop's main-thread cost ceiling; the page may ignore it), `backoff`,
   `sound`, `jpeg` (encode quality 0..1 and the copy block), `bent_mix`,
   `stack_weights`, and `loop` (bend rate limit, stall window, abandoned cap).
-  `loop.max_bend_hz` is a true ceiling: a bend starts at most every
-  1 / max_bend_hz seconds. (The page's bender.js subtracts 8 ms from that
-  interval, which lets it run near 40 a second; its follow-up should drop
-  the 8 ms.)
+  `loop.max_bend_hz` is the bend rate, held by a deadline rather than a
+  minimum gap: `next_due = max(next_due + 1 / max_bend_hz, now - 1 /
+  max_bend_hz)`, and a bend starts when `now >= next_due`. A gap check
+  undershoots on a loop near the same rate (about 20 a second on a 30 Hz
+  loop), and the page's bender.js gap of `1000 / max_bend_hz - 8` ms
+  overshoots to near 40 a second on a fast display; its follow-up should
+  use the deadline.
 - `bender_goldens.json`: sha256 of every JPEG bend at three amounts and two
   seeds on each fixture (plus the byte smear), the MCU walk of each fixture,
   every sensor bend on a rule-defined pixel fixture at two sizes, the pixel
