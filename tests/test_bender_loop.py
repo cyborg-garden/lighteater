@@ -205,6 +205,43 @@ def _rate(tmp_path, monkeypatch, loop_hz, seconds=3.0):
     return submits / seconds
 
 
+def _burst_after_gap(tmp_path, monkeypatch, loop_hz=60, gap_s=5.0, window_s=0.1):
+    """Bends started in the first window_s of a loop_hz loop resuming after a
+    gap_s pause (the mode left behind the menu, a stalled camera)."""
+    monkeypatch.setattr(M, "POOL", "thread")
+    monkeypatch.setattr(M, "bend_frame", lambda *a, **k: dict(status="decode"))
+    host = _booted(tmp_path)
+    m = host.mode
+    m.start(host)
+    frame = _scene(180, 320)
+
+    def run(t, seconds):
+        n = 0
+        for _ in range(int(round(seconds * loop_hz))):
+            before = m.inflight
+            m._kick(frame, t)
+            if m.inflight is not before:
+                n += 1
+                while m._worker.poll() is None:
+                    pass
+                m.inflight = None
+            t += 1.0 / loop_hz
+        return t, n
+
+    t, _ = run(100.0, 1.0)
+    _, burst = run(t + gap_s, window_s)
+    m.stop()
+    return burst
+
+
+def test_no_burst_of_bends_after_a_pause(tmp_path, monkeypatch):
+    """After a pause the deadline restarts from now: one bend at once, then
+    the ceiling's pace. Carrying the old deadline forward would let a 60 Hz
+    loop bend on every frame until it caught up (5 in the first 100 ms)."""
+    window = 0.1
+    assert _burst_after_gap(tmp_path, monkeypatch, window_s=window) <= int(window * M.MAX_BEND_HZ) + 1
+
+
 def test_a_30hz_loop_reaches_the_ceiling(tmp_path, monkeypatch):
     """The ceiling is a deadline, not a minimum gap: on a 30 Hz loop a gap
     check undershoots to about 20 a second."""

@@ -56,8 +56,10 @@ rerun with nothing changed is a no-op.
   `stack_weights`, and `loop` (bend rate, stall window, and the lost-worker
   respawn gap, its doubling ceiling and the losses in a row before giving up).
   `loop.max_bend_hz` is the bend rate, held by a deadline rather than a
-  minimum gap: `next_due = max(next_due + 1 / max_bend_hz, now - 1 /
-  max_bend_hz)`, and a bend starts when `now >= next_due`. A gap check
+  minimum gap: a bend starts when `now >= next_due`, and then `next_due =
+  (now if now - next_due > 1 / max_bend_hz else next_due) + 1 / max_bend_hz`,
+  so a loop that lands a hair early keeps the pace and a pause restarts it
+  from now instead of bursting to catch up. A gap check
   undershoots on a loop near the same rate (about 20 a second on a 30 Hz
   loop), and the page's bender.js gap of `1000 / max_bend_hz - 8` ms
   overshoots to near 40 a second on a fast display; its follow-up should

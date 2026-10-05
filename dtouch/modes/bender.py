@@ -519,8 +519,13 @@ class BenderMode:
         # a clean frame: the back-off ran out of tries and sent it unbent
         self.inflight = (now, a == 0 and want > 0)
         self.last_submit = now
+        # the next bend is due a period after this one was: a loop that
+        # lands a hair early keeps the pace. After a pause (a deadline more
+        # than a period behind) the pace restarts from now, so the loop
+        # does not bend on every frame until it catches up
         period = 1.0 / MAX_BEND_HZ
-        self.next_due = max(self.next_due + period, now - period)
+        base = now if now - self.next_due > period else self.next_due
+        self.next_due = base + period
 
     def step(self, frame_bgr, audio_levels, dt):
         """Camera frame (pre-mirrored by the shell) -> the newest bent frame,
