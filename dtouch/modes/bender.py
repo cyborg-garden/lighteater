@@ -1,7 +1,7 @@
 """Circuit Bender: live JPEG databending of the camera, LightEater's fourth mode
 here (the third on the web page, which has no Particles).
 
-Per bend, on a worker thread (`bend_frame`):
+Per bend, in a one-worker process (`bend_frame`, pixels in, pixels out):
   1. the camera frame, cover-cropped to the output's aspect, at the working
      size (dtouch.bender.working_size: about the inspiring camera's 1024 x
      768, never more than the camera delivers)
@@ -19,9 +19,10 @@ NEAREST, so JPEG blocks stay square.
 
 One bend is in flight at a time and the display shows the newest finished
 one, so the picture runs at the shell's rate and the bends at whatever this
-machine sustains; under MIN_RATE for a few seconds the working size steps
-down (Governor). SCAN SWAP walks the scan in Python and is the slow bend, so
-it is the one that steps the size down on a slow machine.
+machine sustains; when either falls too low for a few seconds the working
+size steps down (Governor). The bend runs in its own process because SCAN
+SWAP walks the scan in pure Python: on a thread it held the GIL for about
+65 ms a bend and the display stalled with it.
 
 Pure numpy/cv2, no GL: the mode runs headless (tests, CI). The browser page
 runs the same bends (held byte-identical by the shared goldens) and the
@@ -40,8 +41,9 @@ from __future__ import annotations
 
 import io
 import math
+import multiprocessing
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 import cv2
 import numpy as np
@@ -50,7 +52,7 @@ from PIL import Image
 from .. import bender as B
 from ..bender_jpeg import EFFECTS as JPEG_EFFECTS
 from ..bender_jpeg import JpegError, bend, rng32
-from ..bender_post import fold, post, sort_runs
+from ..bender_post import fold, post, show, sort_runs
 from ..bender_sensor import SENSOR_EFFECTS, sensor_bend
 from ..imgui import DIM
 from ..overlay_ui import RES_OPTIONS
@@ -60,9 +62,18 @@ from ..panelspec import Cycle, PresetList, Readout, Section, Slider, Toggle
 # BGR (255, 225, 90) = RGB (90, 225, 255), the web card's accent.
 ACCENT = (255, 225, 90)
 
-MAX_BEND_HZ = 30          # past about 30 bends a second the eye gains nothing
+MAX_BEND_HZ = 30          # bends a second at most; past this the eye gains nothing
 STALL_S = 1.5             # a bend still unsettled after this is abandoned
-MAX_ABANDONED = 2         # worker threads left with a stalled bend, at most
+MAX_ABANDONED = 2         # workers left with a stalled bend, at most
+# Where bends run: "process" (the default, off the display's GIL) or
+# "thread" (tests that monkeypatch bend_frame, which a process cannot see).
+POOL = "process"
+
+# The mode's perform keys, and the AUTO rule that goes with them: each one
+# changes the scene, so inside this mode each one hands control back from
+# AUTO (`release_keys`, read by the shell). Outside it they are not bound.
+COMMAND_KEYS = {"bender.effect": "e", "bender.amount": "b", "bender.split": "x",
+                "bender.copy": "c", "bender.sort": "k", "bender.long": "l"}
 GOVERN_EVERY_S = 0.5      # how often the governor looks at the bend rate
 RATE_TAU_S = 1.0          # smoothing for the bend-rate readout
 THUMB = (16, 9)           # the dead-frame check's thumbnail
@@ -147,6 +158,23 @@ def bend_frame(rgb, effect, amount, seed, phase=0.0, t=0.0, sort="off",
     return dict(status="ok", rgb=out, **timing)
 
 
+def _warm():
+    """Imported-and-ready check for a fresh worker process."""
+    return True
+
+
+def _make_pool():
+    """A one-worker pool for bends. A spawned process, not a fork: the shell
+    runs camera, audio and GL threads, and a forked child would inherit
+    their locks mid-flight."""
+    if POOL == "thread":
+        return ThreadPoolExecutor(max_workers=1, thread_name_prefix="bender")
+    pool = ProcessPoolExecutor(max_workers=1,
+                               mp_context=multiprocessing.get_context("spawn"))
+    pool.submit(_warm)                # start the import now, not on bend 1
+    return pool
+
+
 def cover_crop(frame, aspect):
     """The centre of `frame` cropped to `aspect` (w / h), cover-fit."""
     h, w = frame.shape[:2]
@@ -168,6 +196,7 @@ class BenderMode:
     accent = ACCENT
     accepts_still = False
     blurb = "live jpeg\ndatabending"
+    release_keys = "".join(COMMAND_KEYS.values())   # see COMMAND_KEYS
 
     # Built-in looks (DESIGN.md §7): one per effect, in E's order, from the
     # shared table (dtouch.bender.LOOKS). The first, BENT CAM, is where the
@@ -201,12 +230,15 @@ class BenderMode:
         self.decode_fails = self.dead_rejects = self.parse_fails = self.stalls = 0
         self.last_timing = {}
         self.bass = 0.0
+        self.onset = B.Onset()
+        self.display = 0.0            # display frames a second, smoothed
+        self._rng = np.random.default_rng()
 
     # ----- lifecycle -----
     def start(self, host):
         self.host = host
         self._reset()
-        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bender")
+        self._pool = _make_pool()
 
     def stop(self):
         """Idempotent (DESIGN.md §2.2). The worker thread is released without
@@ -308,22 +340,48 @@ class BenderMode:
             toasts.flash("AMOUNT %d%%" % round(ui.bd_amount * 100))
 
         return {
-            "bender.effect": Command("bender.effect", "Next bend", "e",
-                                     _step("bd_effect_idx", EFFECT_LABELS, "")),
-            "bender.amount": Command("bender.amount", "Bend amount 25-100%",
-                                     "b", _amount),
-            "bender.split": Command("bender.split", "Split (aberration)", "x",
-                                    _step("bd_split_idx", SPLIT_LABELS, "split")),
-            "bender.copy": Command("bender.copy", "Copy runs", "c",
-                                   _step("bd_copy_idx", COPY_LABELS, "copy")),
-            "bender.sort": Command("bender.sort", "Pixel sort", "k",
-                                   _step("bd_sort_idx", SORT_LABELS, "sort")),
-            "bender.long": Command("bender.long", "Long exposure", "l",
-                                   _step("bd_long_idx", LONG_LABELS, "long")),
+            name: Command(name, label, COMMAND_KEYS[name], run)
+            for name, label, run in (
+                ("bender.effect", "Next bend",
+                 _step("bd_effect_idx", EFFECT_LABELS, "")),
+                ("bender.amount", "Bend amount 25-100%", _amount),
+                ("bender.split", "Split (aberration)",
+                 _step("bd_split_idx", SPLIT_LABELS, "split")),
+                ("bender.copy", "Copy runs", _step("bd_copy_idx", COPY_LABELS, "copy")),
+                ("bender.sort", "Pixel sort", _step("bd_sort_idx", SORT_LABELS, "sort")),
+                ("bender.long", "Long exposure",
+                 _step("bd_long_idx", LONG_LABELS, "long")))
         }
 
     def safe_look(self):
         return B.EFFECT_TITLES[B.SAFE_LOOK]
+
+    def _auto_on(self):
+        auto = getattr(self.host, "auto", None) if self.host is not None else None
+        return bool(getattr(auto, "on", False))
+
+    def live_amount(self):
+        """The amount bent with now: the slider, breathed by the bass and,
+        under AUTO, swayed slowly (dtouch.bender.live_amount, as the web)."""
+        return B.live_amount(self.amount(), bass=self.bass,
+                             sens=float(self._ui("sens", 1.0)),
+                             auto=self._auto_on(), t=self.t)
+
+    def look_applied(self, cfg):
+        """The shell applied a look. Under AUTO each re-cast also draws a
+        fresh amount and post (dtouch.bender.recast_pick, as the web), so a
+        returning look is not the same picture twice."""
+        if not self._auto_on() or self.host is None or self.host.ui is None:
+            return
+        ui = self.host.ui
+        title = cfg.get("effect")
+        name = next((e for e in B.EFFECTS if B.EFFECT_TITLES[e] == title), B.SAFE_LOOK)
+        pick = B.recast_pick(name, self._rng.random)
+        ui.bd_amount = float(pick["amount"])
+        ui.bd_split_idx = B.SPLIT_LADDER.index(pick["split"])
+        ui.bd_copy_idx = B.COPY_LADDER.index(pick["copy"])
+        ui.bd_sort_idx = B.SORT_LADDER.index(pick["sort"])
+        ui.bd_long_idx = B.LONG_LADDER.index(pick["long"])
 
     def status_tail(self, cam_name):
         w, h = self.size
@@ -378,13 +436,12 @@ class BenderMode:
             self.inflight = None
             if self._pool is not None:
                 self._pool.shutdown(wait=False)
-                self._pool = ThreadPoolExecutor(max_workers=1,
-                                                thread_name_prefix="bender")
+                self._pool = _make_pool()
 
     def _kick(self, frame, now):
         if self._pool is None or self.inflight is not None:
             return
-        if now - self.last_submit < 1.0 / MAX_BEND_HZ - 0.008:
+        if now - self.last_submit < 1.0 / MAX_BEND_HZ:
             return
         w, h = self._working_size(frame)
         if (w, h) != self.size:
@@ -394,8 +451,7 @@ class BenderMode:
                          interpolation=cv2.INTER_AREA)
         rgb = cv2.cvtColor(src, cv2.COLOR_BGR2RGB)
         effect = self.effect()
-        want = B.live_amount(self.amount(), bass=self.bass,
-                             sens=float(self._ui("sens", 1.0)))
+        want = self.live_amount()
         a = self.backoff.amount(want)
         seed = B.touch_seed(self.cut.cuts) if effect in SENSOR_EFFECTS else self.cut.seed
         fut = self._pool.submit(bend_frame, rgb, effect, a, seed,
@@ -415,7 +471,7 @@ class BenderMode:
         self.bass = 0.0
         if audio_levels is not None:
             self.bass = float(audio_levels.get("bass", 0.0))
-            onset = bool(audio_levels.get("onset", False))
+            onset = self.onset.step(self.bass, dt)
         self.cut.step(dt, onset, B.cut_tempo(self.effect()))
         bends_before = self.bends
         if self.inflight is not None:
@@ -425,9 +481,11 @@ class BenderMode:
         inst = (self.bends - bends_before) / dt if dt > 0 else 0.0
         k = 1 - math.exp(-dt / RATE_TAU_S) if dt > 0 else 0.0
         self.rate += (inst - self.rate) * k
+        if dt > 0:
+            self.display += (1.0 / dt - self.display) * k
         self.since_govern += dt
         if self.since_govern >= GOVERN_EVERY_S and self.bends > 0:
-            self.governor.step(self.since_govern, self.rate)
+            self.governor.step(self.since_govern, self.rate, self.display)
             self.since_govern = 0.0
 
         pic = self.bent
@@ -446,7 +504,7 @@ class BenderMode:
                 self.stack = None
                 alpha = 1.0
             self.stack = fold(self.stack, pic, alpha)
-            pic = np.clip(self.stack + 0.5, 0, 255).astype(np.uint8)
+            pic = show(self.stack)
         else:
             self.stack = None
         return cv2.resize(pic, (rw, rh), interpolation=cv2.INTER_NEAREST)

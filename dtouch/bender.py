@@ -124,10 +124,14 @@ def working_size(out_w, out_h, src_w=math.inf, src_h=math.inf, budget=MAX_PIXELS
     return w, h, out_w / w
 
 
-# The budget governor: below MIN_RATE bends a second for SLOW_S seconds
-# straight, the pixel budget steps down by STEP_DOWN, never under MIN_PIXELS.
-# It only steps down, so the picture never pumps between two sizes.
+# The budget governor: below MIN_RATE bends a second, or below MIN_DISPLAY
+# display frames a second, for SLOW_S seconds straight, the pixel budget
+# steps down by STEP_DOWN, never under MIN_PIXELS. It only steps down, so the
+# picture never pumps between two sizes. (The display check is the desktop's:
+# its bends share a machine with the display loop. The browser's governor
+# watches the bend rate only.)
 MIN_RATE = 15
+MIN_DISPLAY = 20
 SLOW_S = 3
 STEP_DOWN = 0.7
 
@@ -138,12 +142,13 @@ class Governor:
         self.slow = 0.0
         self.steps = 0
 
-    def step(self, dt, rate):
-        """dt seconds of a running loop at `rate` bends a second; True when
-        the budget changed."""
+    def step(self, dt, rate, display=math.inf):
+        """dt seconds of a running loop at `rate` bends a second and `display`
+        frames a second; True when the budget changed."""
         if not dt > 0:
             return False
-        self.slow = self.slow + min(dt, 1) if rate < MIN_RATE else 0.0
+        slow = rate < MIN_RATE or display < MIN_DISPLAY
+        self.slow = self.slow + min(dt, 1) if slow else 0.0
         if self.slow < SLOW_S or self.budget <= MIN_PIXELS:
             return False
         self.slow = 0.0
@@ -192,6 +197,32 @@ class CutClock:
             self.cuts += 1
             return True
         return False
+
+
+# The desktop's mic (dtouch.audio) reports levels, not onsets, so an onset is
+# the bass rising ONSET_RISE above its own slow average (time constant
+# ONSET_TAU_S); it re-arms once the bass falls back under the average. The
+# browser's analyser reports onsets itself.
+ONSET_RISE = 0.25
+ONSET_TAU_S = 0.4
+
+
+class Onset:
+    def __init__(self):
+        self.avg = 0.0
+        self.armed = True
+
+    def step(self, bass, dt):
+        """True on the frame the bass jumps."""
+        bass = clamp01(bass)
+        hit = self.armed and bass - self.avg > ONSET_RISE
+        if hit:
+            self.armed = False
+        elif bass <= self.avg:
+            self.armed = True
+        k = 1 - math.exp(-max(dt, 0.0) / ONSET_TAU_S)
+        self.avg += (bass - self.avg) * k
+        return hit
 
 
 # Sensor bends take a new touch every TOUCH_CUTS cuts: between touches the

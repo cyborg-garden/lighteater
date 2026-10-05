@@ -7,9 +7,11 @@ and the long exposure's running average.
 - `post` is `dtouch/shaders/bender/post.frag` (COPY: block runs and echoed
   bands; SPLIT: chromatic aberration) in numpy. The shader is what the
   browser runs on the GPU; this is the same rule for the desktop's headless
-  pipeline. The hash is evaluated in float32 like the shader's, but GPU and
-  numpy float rounding can differ in the last place, so the two agree in
-  kind, not bit for bit (the goldens do not cover it).
+  pipeline. The hash is evaluated in float32 like the shader's; on the GPU
+  tested (tests/test_bender_shared.py) the two agree pixel for pixel, but a
+  GPU may round its last place differently, so the goldens do not cover it.
+  The COPY map depends only on the size, amount and seed (which changes a
+  few times a second), so it is built once and reused (`_COPY_CACHE`).
 - `fold` is `dtouch/shaders/bender/stack.frag`'s running mean, without the
   RGBA8 dither (the desktop stacks in float32).
 
@@ -20,6 +22,7 @@ code.
 """
 from __future__ import annotations
 
+import cv2
 import numpy as np
 
 
@@ -103,19 +106,43 @@ def _copy_src(h, w, copy, seed, block):
     return sy, sx
 
 
+_COPY_CACHE = {}
+_COPY_CACHE_MAX = 4
+
+
+def _copy_maps(h, w, copy, seed, block):
+    """The COPY map as cv2.remap fixed-point maps, cached on everything it
+    depends on. The seed changes on each cut (a few times a second), so a
+    frame almost always reuses the last map: building it is about 20 ms at
+    the working size, a NEAREST remap through it well under 1. The maps are
+    whole pixels, so the remap is an exact lookup."""
+    key = (h, w, float(copy), float(seed), int(block))
+    maps = _COPY_CACHE.get(key)
+    if maps is None:
+        sy, sx = _copy_src(h, w, copy, seed, block)
+        # one CV_16SC2 map of whole-pixel (x, y), no fraction table
+        maps = (np.ascontiguousarray(np.dstack([np.clip(sx, 0, w - 1),
+                                                np.clip(sy, 0, h - 1)]).astype(np.int16)),
+                None)
+        if len(_COPY_CACHE) >= _COPY_CACHE_MAX:
+            _COPY_CACHE.pop(next(iter(_COPY_CACHE)))
+        _COPY_CACHE[key] = maps
+    return maps
+
+
 def post(rgb, split=0.0, copy=0.0, seed=0.5, block=16):
     """COPY then SPLIT on RGB uint8 (h, w, 3); returns new pixels (or `rgb`
     itself when both are off). SPLIT takes red from `split` pixels right and
-    blue from as far left of the copied picture, clamped at the frame edge
-    (post.frag clamps after the copy lookup instead, which differs only in
-    the `split` columns at each edge)."""
+    blue from as far left of the copied picture, clamped at the frame edge.
+    That is post.frag's rule exactly: it clamps the split's sample point
+    into the frame, then looks it up through COPY."""
     s = int(np.floor(float(split) + 0.5))
     if s == 0 and copy <= 0:
         return rgb
     h, w = rgb.shape[:2]
     if copy > 0:
-        sy, sx = _copy_src(h, w, copy, seed, block)
-        rgb = rgb[np.clip(sy, 0, h - 1), np.clip(sx, 0, w - 1)]
+        m1, m2 = _copy_maps(h, w, copy, seed, block)
+        rgb = cv2.remap(rgb, m1, m2, cv2.INTER_NEAREST)
     if not s:
         return rgb
     xs = np.arange(w)
@@ -126,9 +153,15 @@ def post(rgb, split=0.0, copy=0.0, seed=0.5, block=16):
 
 
 def fold(stack, cur, alpha):
-    """stack.frag's running mean: mix(stack, cur, alpha), float32. `stack`
-    None starts a fresh exposure."""
-    cur = cur.astype(np.float32)
-    if stack is None or alpha >= 1.0:
-        return cur
-    return stack + (cur - stack) * np.float32(alpha)
+    """stack.frag's running mean: mix(stack, cur, alpha), float32, updated in
+    place (cv2.accumulateWeighted) and returned. `stack` None starts a fresh
+    exposure. `show` turns it back into display pixels."""
+    if stack is None or alpha >= 1.0 or stack.shape != cur.shape:
+        return cur.astype(np.float32)
+    cv2.accumulateWeighted(cur, stack, float(alpha))
+    return stack
+
+
+def show(stack):
+    """A float32 stack as uint8 pixels, rounded and saturated."""
+    return cv2.convertScaleAbs(stack)

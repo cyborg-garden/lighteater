@@ -405,7 +405,7 @@ def test_registered_with_a_free_key():
     assert BenderMode in REGISTRY and mode_by_id("bender") is BenderMode
     keys = [getattr(m, "key", m.id[:1]) for m in REGISTRY]
     assert len(keys) == len(set(keys))
-    assert ord("j") in AUTO_RELEASE_KEYS and ord("e") in AUTO_RELEASE_KEYS
+    assert ord("j") in AUTO_RELEASE_KEYS
 
 
 def test_distinct_from_the_signal_racks_circuit_bent():
@@ -484,6 +484,9 @@ def test_a_stalled_bend_is_abandoned_not_waited_on(tmp_path, monkeypatch):
         return dict(status="decode")
     monkeypatch.setattr(M, "bend_frame", stuck)
     monkeypatch.setattr(M, "STALL_S", 0.05)
+    monkeypatch.setattr(M, "POOL", "thread")         # a process cannot see the patch
+    m.stop()
+    m.start(host)
     frame = _scene(180, 320)
     m.step(frame, None, 1 / 30)
     assert m.inflight is not None

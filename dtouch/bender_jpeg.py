@@ -411,12 +411,31 @@ def stuff(u):
     return np.insert(u, ff + 1, 0).astype(np.uint8)
 
 
+_HUFF_CACHE = {}
+_HUFF_CACHE_MAX = 16
+
+
 def _huff_lut(b, h):
-    """A 16-bit peek table for one DHT entry (canonical codes, C.2 and
-    F.2.2.3): sym[v] / ln[v] for the code at the top of the 16 bits v, ln 0
-    where no code of 16 bits or fewer matches (the browser's decode -1)."""
-    counts = [b[h["counts"] + k] for k in range(16)]
-    vals = np.frombuffer(bytes(b[h["symbols"]:h["symbols"] + h["n"]]), dtype=np.uint8)
+    """The peek table for one DHT entry, cached on the table's own bytes (the
+    16 counts and the symbols): an encoder writes the same tables on every
+    frame, and building one is a 65536-entry pass."""
+    key = bytes(b[h["counts"]:h["counts"] + 16]) + bytes(b[h["symbols"]:h["symbols"] + h["n"]])
+    lut = _HUFF_CACHE.get(key)
+    if lut is None:
+        lut = _build_huff_lut(key)
+        if len(_HUFF_CACHE) >= _HUFF_CACHE_MAX:
+            _HUFF_CACHE.pop(next(iter(_HUFF_CACHE)))
+        _HUFF_CACHE[key] = lut
+    return lut
+
+
+def _build_huff_lut(key):
+    """A 16-bit peek table from a DHT entry's bytes (16 counts, then the
+    symbols; canonical codes, C.2 and F.2.2.3): sym[v] / ln[v] for the code
+    at the top of the 16 bits v, ln 0 where no code of 16 bits or fewer
+    matches (the browser's decode -1)."""
+    counts = list(key[:16])
+    vals = np.frombuffer(key[16:], dtype=np.uint8)
     peek = np.arange(65536, dtype=np.int64)
     sym = np.zeros(65536, dtype=np.int32)
     ln = np.zeros(65536, dtype=np.int32)
