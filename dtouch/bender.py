@@ -104,6 +104,24 @@ def stack_tau(effect, long):
     return max(long / 2 if long > 0 else 0, SETTLE_S.get(effect, 0))
 
 
+def settle_alpha(effect, long, dt, new_bends, max_hz):
+    """The running mean's weight for this display frame. A long exposure is
+    wall time (`dt` seconds of it). A settle is a count of bends: each new
+    bend weighs 1 - exp(-1 / (tau x max_hz)), so it averages the same number
+    of bends whether this machine bends at 30 a second or 8 (per second, a
+    loaded machine's few bends each weighed far more, and the settle stopped
+    hiding the strobe). None: a settle with no new bend holds the stack.
+    0.0: no running mean at all."""
+    tau = stack_tau(effect, long)
+    if tau <= 0:
+        return 0.0
+    if long > 0 and long / 2 >= SETTLE_S.get(effect, 0):
+        return 1 - math.exp(-max(dt, 0.0) / tau)
+    if new_bends <= 0:
+        return None
+    return 1 - math.exp(-new_bends / (tau * max_hz))
+
+
 # ----- the working size -----
 
 # The camera that inspired this mode saves 1024 x 768 JPEGs, so an 8x8 block

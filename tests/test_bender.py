@@ -6,6 +6,7 @@ piece promises on its own: the JPEG bends keep the stream decodable, amount 0
 is the identity, the sensor bends model a Bayer sensor, the clocks and
 back-off behave, and the mode plugs into the shell headless.
 """
+import math
 import os
 import time
 
@@ -552,3 +553,31 @@ def test_a_stalled_bend_is_abandoned_not_waited_on(tmp_path, monkeypatch):
     assert m.stalls == 1
     gate.set()
     m.stop()
+
+
+# ---------- settle per bend ----------
+
+def test_settle_folds_per_bend_not_per_second():
+    """A bitstream bend's settle averages the same number of bends on any
+    machine: a slow machine's longer frames must not weigh each bend more."""
+    fast = B.settle_alpha("remap", 0, 1 / 60, 1, 30)
+    slow = B.settle_alpha("remap", 0, 1 / 8, 1, 30)
+    assert fast == pytest.approx(slow)
+    assert fast == pytest.approx(1 - math.exp(-1 / (B.SETTLE_S["remap"] * 30)))
+    two = B.settle_alpha("swap", 0, 0.1, 2, 30)
+    one = B.settle_alpha("swap", 0, 0.1, 1, 30)
+    assert 1 - two == pytest.approx((1 - one) ** 2)
+
+
+def test_settle_holds_without_a_new_bend():
+    assert B.settle_alpha("remap", 0, 0.05, 0, 30) is None
+
+
+def test_long_exposure_stays_on_wall_time():
+    a = B.settle_alpha("remap", 3, 0.1, 0, 30)
+    assert a == pytest.approx(1 - math.exp(-0.1 / 1.5))
+    assert B.settle_alpha("remap", 3, 0.1, 5, 30) == pytest.approx(a)
+
+
+def test_no_settle_no_alpha():
+    assert B.settle_alpha("bent", 0, 0.1, 1, 30) == 0.0
