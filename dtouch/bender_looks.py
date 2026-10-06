@@ -112,7 +112,7 @@ def looks_payload():
         "jpeg": {"quality": B.JPEG_Q, "block": B.BLOCK},
         "bent_mix": {k: _num(v) for k, v in BENT_MIX.items()},
         "iconic": S.ICONIC,
-        "thermal": {"gain": list(S.THERMAL_GAIN), "noise": S.THERMAL_NOISE,
+        "thermal": {"gain": [_num(v) for v in S.THERMAL_GAIN], "noise": S.THERMAL_NOISE,
                     "poster": S.THERMAL_POSTER, "noise_hz": S.THERMAL_NOISE_HZ},
         "streak": {"cast": S.STREAK_CAST, "grab": S.STREAK_GRAB},
         "stack_weights": [[name, w] for name, w in STACK_WEIGHTS],

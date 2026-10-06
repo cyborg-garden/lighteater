@@ -69,7 +69,7 @@ BENT_MIX = {"cast": 1.0, "slip": 0.7, "adc": 0.45}
 # THERMAL_GAIN[0] + THERMAL_GAIN[1] x a per-colour hash), the shadow noise at
 # amount 1, the low bits dropped at amount 1, and how many times a second the
 # noise is drawn again.
-THERMAL_GAIN = (0.8, 2.2)
+THERMAL_GAIN = (1.6, 4)
 THERMAL_NOISE = 70
 THERMAL_POSTER = 2.5
 THERMAL_NOISE_HZ = 6

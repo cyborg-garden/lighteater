@@ -192,7 +192,7 @@
  },
  "iconic": 3,
  "thermal": {
-  "gain": [0.8,2.2],
+  "gain": [1.6,4],
   "noise": 70,
   "poster": 2.5,
   "noise_hz": 6
