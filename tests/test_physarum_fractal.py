@@ -918,10 +918,9 @@ def test_h_steps_flat_relief_fractal_on_the_gpu(tmp_path):
         pytest.skip("no GL context available (CI)")
     run = m.commands()["physarum.depth"].run
     toast = lambda: host.hud.toasts._center.text          # noqa: E731
-    # lands on depth, fractal off; H steps up to the look's on-amount
-    assert ui.ph_fractal == 0.0 and ui.ph_depth == 0.9
-    run()
-    assert (ui.ph_depth, ui.ph_fractal, toast()) == (0.9, 1.0, "DEPTH 0.9 + FRACTAL 1.0")
+    # boot lands on the third step, in the molten ink (the owner's call
+    # 2026-10-06; tests/test_physarum_ink.py), and H steps on from there
+    assert ui.ph_fractal == 1.0 and ui.ph_depth == 0.9
     run()
     assert (ui.ph_depth, ui.ph_fractal, toast()) == (0.0, 0.0, "FLAT")
     run()

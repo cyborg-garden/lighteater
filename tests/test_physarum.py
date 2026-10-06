@@ -94,7 +94,10 @@ def test_status_line_is_spec_derived_and_ascii(tmp_path):
     assert s == s.encode("ascii", "replace").decode()
     m = host.mode
     assert m.engine in ("gl", "cpu")
-    assert s == ("PHYSARUM  matte auto  body fingers  field veins  arctic"
+    # the GPU engine lands in the molten ink over violet (ALIVE['landing'];
+    # tests/test_physarum_ink.py), the CPU fallback on veinwork's own arctic
+    pal = "violet" if m.engine == "gl" else "arctic"
+    assert s == (f"PHYSARUM  matte auto  body fingers  field veins  {pal}"
                  f"  {m.engine} {_fmt_agents(m.n)}  cam synthetic")
 
 

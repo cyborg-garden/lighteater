@@ -187,6 +187,7 @@ def _wire_perform_keys(reg, ui, hud, ps, recall, mode_commands=None,
         ui.glitch = False
         name = safe_look() if safe_look is not None else ui.preset_name
         if isinstance(name, str):
+            ui.land_pending = True     # the mode's landing() runs after the look
             if name in ui.presets:
                 _recall(name)
             else:
@@ -686,6 +687,7 @@ class Host:
             if isinstance(safe, str) and safe in self.ui.presets:
                 self.ui.preset_idx = self.ui.presets.index(safe)
                 self.ui.pending_preset = safe
+                self.ui.land_pending = True
         else:
             prev = self._mode_preset.get(mode_id)
             if prev in self.ui.presets:
@@ -1001,13 +1003,27 @@ class Host:
         by look-switching; apply="reset" merges over the mode's defaults."""
         ui = self.ui
         name, ui.pending_preset = ui.pending_preset, None
+        land, ui.land_pending = getattr(ui, "land_pending", False), False
         # the mailbox is cleared BEFORE the apply on purpose: clearing it after
         # meant a look that raised left the mailbox armed, so the next frame
         # applied the same bad look and raised again — forever, at frame rate,
         # with no way to select a different one
         if name in self.all_presets:
-            self._apply_look(name, self.all_presets[name])
+            if self._apply_look(name, self.all_presets[name]) and land:
+                self._land()
             self._autosave_state()
+
+    def _land(self):
+        """The mode's optional landing() hook, after the look a boot, a first
+        entry or panic landed on (physarum lands in the molten ink)."""
+        hook = getattr(self.mode, "landing", None)
+        if hook is not None:
+            try:
+                hook()
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except Exception as e:                   # noqa: BLE001 — §6.4
+                print("landing failed:", e)
 
     def _assign_slot(self, name):
         """Slot-badge click (DESIGN.md §6.3): an unbanked look takes the next
@@ -1509,7 +1525,9 @@ class Host:
             # — and contained the same way: a stored look with an unusable
             # value used to end the boot with a traceback and no window, which
             # is the one failure a performer cannot work around (§6.4)
-            self._apply_look(preset, self.all_presets[preset])
+            if self._apply_look(preset, self.all_presets[preset]) \
+                    and preset == mode.safe_look():
+                self._land()           # boot on the safe look lands like panic
         mode.configure_ui(ui)
         ui.user_presets = _presets.user_names(self.presets_path, mode=mode.id)
         self._seed_bank_setlist()

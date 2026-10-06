@@ -50,6 +50,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from ..alive import ALIVE
 from ..circuit_bent import CircuitBent
 from ..commands import Command
 from ..hud import AMBER
@@ -57,6 +58,7 @@ from ..matte import MatteUnavailable, make_matte, select_matte
 from ..overlay_ui import RES_OPTIONS, sync_signal
 from ..panelspec import Cycle, PresetList, Section, Slider, Toggle
 from ..physarum import BLOOM, FRACTAL, POINT_NAMES, PhysarumField, bloom_zones
+from ..physarum_alive import scene_size
 from ..physarum_gl import PhysarumFieldGL
 from ..rack_gl import PhysarumOutGL
 from .particles import MATTE_H, MATTE_W, MATTES, composite_video_bg
@@ -237,6 +239,20 @@ def _palette_lut(name):
     return lut
 
 
+_LUT_ROWS = {}
+
+
+def _lut_rows(names):
+    """Every palette's 256x3 LUT stacked a row per palette, the browser's
+    buildLut ('video' has no LUT; its row is mono and never read). Cached
+    per palette list, so the ink's LUT texture is uploaded once."""
+    rows = _LUT_ROWS.get(names)
+    if rows is None:
+        rows = _LUT_ROWS[names] = np.stack(
+            [_palette_lut("mono" if n == "video" else n) for n in names])
+    return rows
+
+
 def _colorize(lum, name):
     """lum float32 [0,1] (h, w) -> uint8 RGB (h, w, 3) through the palette.
 
@@ -349,10 +365,16 @@ class PhysarumMode:
     # _stats_late), and the fractal frame sits at the stock frame's median.
     FRACTAL_DENSITY_TIER = {"perform": 1.8, "balance": 1.8, "quality": 1.0}
 
-    def __init__(self, matte="auto", grid=None, n=None, seed=1, engine="auto"):
+    def __init__(self, matte="auto", grid=None, n=None, seed=1, engine="auto",
+                 alive=True):
         if engine not in self.ENGINES:
             raise ValueError(f"engine must be one of {self.ENGINES}, got {engine!r}")
         self.matte_kind = matte
+        # the alive fractal step (dtouch.physarum_alive) on H's third step,
+        # GPU engine only; alive=False keeps the stock fractal veins there
+        self.alive_enabled = bool(alive)
+        self._land_wanted = False    # the ink landing, applied on the next step
+        self._ink_landed = None      # (palette idx, fractal) it replaced, until a look
         self._grid = tuple(grid) if grid is not None else None
         self._n = n
         self._quality = "perform"
@@ -715,6 +737,49 @@ class PhysarumMode:
             v = FRACTAL_DEFAULT
         self._fractal_last = min(max(v, 0.0), 1.0) if np.isfinite(v) else FRACTAL_DEFAULT
         self._fractal_seen = float(self._ui("ph_fractal", FRACTAL_DEFAULT))
+        # a look of the performer's own: no ink landing to undo or still to do
+        self._ink_landed = None
+        self._land_wanted = False
+
+    def landing(self):
+        """The shell landed on the safe look for boot, a first entry or
+        panic (0): land in the molten ink over ALIVE['landing']'s palette on
+        H's third step (the owner's call 2026-10-06, the browser's landInk).
+        Applied now when the engine is known (the shell starts the mode
+        before it applies the look), else on the next step(); a host that
+        cannot run the ink (CPU engine, alive off, a GPU that cannot build
+        the passes) keeps the shared landing (depth, fractal off)."""
+        ui = self.host.ui if self.host is not None else None
+        if self.engine is not None and ui is not None:
+            self._land_ink(ui)
+        else:
+            self._land_wanted = True
+
+    def _land_ink(self, ui):
+        self._land_wanted = False
+        if (ui is None or self.engine != "gl" or not self.alive_enabled
+                or not self.fractal_available() or ALIVE["ink"] < 0
+                or not self._fractal_last > 0.0):
+            return
+        pal = ALIVE["landing"]["palette"]
+        if pal not in self.palettes:
+            return
+        self._ink_landed = (getattr(ui, "ph_palette_idx", 0),
+                            float(getattr(ui, "ph_fractal", FRACTAL_DEFAULT)))
+        ui.ph_palette_idx = self.palettes.index(pal)
+        ui.ph_fractal = self._fractal_last
+        self._fractal_seen = float(ui.ph_fractal)
+
+    def _unland_ink(self, ui, why):
+        """An alive failure after the ink landing puts the shared landing
+        back (the browser's aliveFail): the palette and the fractal amount
+        the look itself carried."""
+        back, self._ink_landed = self._ink_landed, None
+        if ui is not None and back is not None:
+            ui.ph_palette_idx, ui.ph_fractal = back
+            self._fractal_seen = float(ui.ph_fractal)
+        if self.host is not None:
+            self.host.hud.toasts.flash(f"ink unavailable: {why}"[:80], AMBER)
 
     def _follow_fractal(self):
         """Keep h's restore value on the live look: a change to ph_fractal
@@ -779,6 +844,8 @@ class PhysarumMode:
         rw, rh = self.host.res
         if ui is not None:
             ui.ph_fractal_ok = self.fractal_available()   # the Fractal row's gate
+        if self._land_wanted:
+            self._land_ink(ui)
 
         if ui is not None and getattr(ui, "ph_matte_idx", None) is not None:
             want = self.mattes[ui.ph_matte_idx % len(self.mattes)]
@@ -960,6 +1027,7 @@ class PhysarumMode:
         gray = cv2.resize(
             cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0,
             (gw, gh))
+        luma = gray                  # the camera's own light (the alive scene's)
 
         # react: motion carves. Frame-differenced luma builds a lingering
         # motion-energy map; it is poured into the food channel (sensors
@@ -1083,7 +1151,29 @@ class PhysarumMode:
                 pf.wave(px_c, py_c)
             self._burst_pending = self._wave_pending = False
 
+        if self.engine == "gl":
+            # the alive fractal step's inputs (it runs only on H's third
+            # step): the motion map the browser's motion pass keeps (r the
+            # lingering history, g this frame's luma, b the instantaneous
+            # deadbanded difference) and the matte, at the scene grid
+            pf.alive = self.alive_enabled
+            if self.alive_enabled and pf.fractal > 0.0:
+                sw, sh = scene_size(gw, gh)
+                mot = np.dstack([self._motion, luma, motion,
+                                 np.ones_like(luma)]).astype(np.float32)
+                pf.alive_scene_in = (
+                    cv2.resize(mot, (sw, sh), interpolation=cv2.INTER_AREA),
+                    cv2.resize(m.astype(np.float32), (sw, sh), interpolation=cv2.INTER_AREA))
+                pf.alive_dt = float(dt)
+                pf.alive_react = float(r)
+                pf.alive_person = self.matte_kind == "person"
+                amp = float(audio_levels.get("amp", 0.0)) if audio_levels is not None else 0.0
+                pf.alive_sound = float(self._ui("sens", 1.0)) * amp
+
         pf.update(m, gray, keep)
+        if self._ink_landed is not None and (getattr(pf, "alive_error", None)
+                                             or getattr(pf, "fractal_error", None)):
+            self._unland_ink(ui, pf.alive_error or pf.fractal_error)
         err = getattr(pf, "fractal_error", None)
         if err is not None and not self._fractal_err_told:
             # the engine fell back to the stock mold and the Fractal row is
@@ -1092,6 +1182,19 @@ class PhysarumMode:
             self.host.hud.toasts.flash(f"fractal veins unavailable: {err}"[:80], AMBER)
 
         pal = self.palettes[int(self._ui("ph_palette_idx", 0)) % len(self.palettes)]
+        self.signal_done = False
+        # the molten calligraphy (H's third step with the alive step on): its
+        # own display pass, camera ground and all. Before the GPU rack on
+        # purpose: with SIGNAL on, the shell's CPU rack runs over the ink
+        # (signal_done stays False), a slower path but the same picture.
+        if (self.engine == "gl" and pal != "video" and self.alive_enabled
+                and pf.alive_display()):
+            out = self._step_ink(pf, pal, frame_bgr, rw, rh)
+            if out is not None:
+                samp = pf.lum_sample()
+                if samp is not None:
+                    self._last_lum = samp
+                return out
         # SIGNAL on the GPU (DESIGN.md §2.4; PR #26's measured port list):
         # with the GL engine and the rack ON, tonemap + colorize + upscale +
         # video composite + the whole rack run as fragment passes on the
@@ -1146,6 +1249,33 @@ class PhysarumMode:
             out = composite_video_bg(out, frame_bgr,
                                      float(self._ui("ph_video_mix", 0.5)))
         return np.ascontiguousarray(out)
+
+    # ----- the molten calligraphy -----
+    def _step_ink(self, pf, pal, frame_bgr, rw, rh):
+        """One frame in the molten ink (dtouch/shaders/alive/ink.frag), at
+        the alive picture's size, upscaled once to host.res. The camera is
+        the ground only when the video background is on (the landing keeps
+        it off: black, the owner's call); then the ink draws the feed itself
+        and the CPU composite is skipped. None when the field could not draw
+        it this frame (empty trail, an alive failure): the caller colourises
+        luminance() instead."""
+        rows = _lut_rows(tuple(self.palettes))
+        row = (self.palettes.index(pal) + 0.5) / len(self.palettes)
+        cam, bg, mix = None, "off", 0.5
+        if bool(self._ui("ph_video_bg", False)):
+            mix = float(self._ui("ph_video_mix", 0.5))
+            lw, lh = pf.render_size()
+            cam = cv2.cvtColor(cv2.resize(frame_bgr, (lw, lh), interpolation=cv2.INTER_AREA),
+                               cv2.COLOR_BGR2RGB)
+            # the desktop's one video toggle reads as the browser's veil:
+            # the feed through the palette, as bright as the mix slider says
+            bg = "veil"
+        img = pf.ink_frame(rows, row, cam, bg, mix)
+        if img is None:
+            return None
+        if (img.shape[1], img.shape[0]) != (rw, rh):
+            img = cv2.resize(img, (rw, rh), interpolation=cv2.INTER_LINEAR)
+        return np.ascontiguousarray(img)
 
     # ----- SIGNAL on the GPU -----
     def _ensure_glout(self, rw, rh):
