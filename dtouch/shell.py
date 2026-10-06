@@ -57,7 +57,7 @@ BANK_SLOTS = 9
 BANK_SEED_MAX = 7
 
 AUTO_RELEASE_KEYS = frozenset(
-    [ord(c) for c in "0123456789[],.-=_+xpdo"]
+    [ord(c) for c in "0123456789[],.-=_+xpdoj"]
 )
 
 REC_DIR = "out"        # recordings land beside the launch dir; created on first take
@@ -793,7 +793,10 @@ class Host:
             return
         if self.ui is not None and self.ui.on_key(key):
             return                             # rename typing eats the key
-        if key in AUTO_RELEASE_KEYS and self.auto.interrupt():
+        # plus the active mode's own scene keys (Circuit Bender's bend keys)
+        scene = key in AUTO_RELEASE_KEYS or (
+            0 <= key < 256 and chr(key).lower() in getattr(self.mode, "release_keys", ""))
+        if scene and self.auto.interrupt():
             self.hud.toasts.hint("auto off - you took over")
         self.overlay = _perform_key(key, self.overlay, self.ps,
                                     self.reg, self.hud)

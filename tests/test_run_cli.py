@@ -207,6 +207,22 @@ def test_preset_owners_reads_builtins_and_saved_looks(empty_store):
     assert run.preset_owners("mine") == ["dithergirl"]
 
 
+def test_mode_bender_boots_circuit_bender(launch, monkeypatch):
+    monkeypatch.setattr(run, "BenderMode", FakeMode)
+    host = launch("--mode", "bender")
+    assert isinstance(host.mode, FakeMode)
+
+
+def test_a_bender_look_boots_circuit_bender(launch, empty_store, monkeypatch):
+    """A preset only Circuit Bender owns resolves to it (MODE_ARG must know
+    the mode, or the lookup raises KeyError at launch)."""
+    assert run.preset_owners("bent cam") == ["bender"]
+    host = launch("--preset", "bent cam")
+    assert type(host.mode).__name__ == "BenderMode"
+    assert host.kw["preset"] == "bent cam"
+    assert run.resolve_preset("bent cam", None) == ("bender", "bent cam")
+
+
 def test_grid_mode_says_the_preset_is_ignored(launch, empty_store, capsys):
     launch("--mode", "grid", "--preset", "embers")
     assert "--preset embers ignored" in capsys.readouterr().out

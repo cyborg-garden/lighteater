@@ -17,6 +17,7 @@ Mode 'grid' is the older luminance-displaced grid.
 
     python run.py --mode dithergirl     # boot into Dither (live dithering)
     python run.py --mode physarum       # boot into Physarum (slime-mold veins eat the light)
+    python run.py --mode bender         # boot into Circuit Bender (live JPEG databending)
     python run.py --still photo.jpg     # load a still and imply dithergirl
 
 Launching with no mode-implying flag opens the home menu with the live camera
@@ -40,11 +41,13 @@ MOTION (flocking) and SIGNAL (glitch + dithering). Click a header to open it.
 from __future__ import annotations
 
 import argparse
+import multiprocessing
 
 from dtouch import presets as _presets
 from dtouch.camera import list_cameras
 from dtouch.live import live
 from dtouch.modes import REGISTRY, mode_by_id
+from dtouch.modes.bender import BenderMode
 from dtouch.modes.dithergirl import DitherGirlMode
 from dtouch.modes.particles import ParticlesMode
 from dtouch.modes.physarum import PhysarumMode
@@ -90,7 +93,8 @@ def boot_mode_name(mode_arg, still_arg, particles_flags=False):
 # run.py's --mode spellings vs Mode.id — the launcher predates the registry,
 # so 'flow' is the CLI name for the particles mode ('grid' is the legacy
 # non-shell path and owns no looks).
-MODE_ARG = {"particles": "flow", "dithergirl": "dithergirl", "physarum": "physarum"}
+MODE_ARG = {"particles": "flow", "dithergirl": "dithergirl", "physarum": "physarum",
+            "bender": "bender"}
 MODE_ID = {v: k for k, v in MODE_ARG.items()}
 
 
@@ -150,7 +154,7 @@ def resolve_preset(name, boot, path="presets.json"):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", default=None,
-                    choices=["flow", "grid", "dithergirl", "physarum"])
+                    choices=["flow", "grid", "dithergirl", "physarum", "bender"])
     ap.add_argument("--still", default=None, metavar="PATH",
                     help="load a still image (implies --mode dithergirl)")
     ap.add_argument("--ui", default="panel", choices=["panel", "keys"],
@@ -206,6 +210,8 @@ def main():
         mode = DitherGirlMode(still=bool(args.still))
     elif boot == "physarum":
         mode = PhysarumMode(matte=args.matte)
+    elif boot == "bender":
+        mode = BenderMode()
     else:
         mode = ParticlesMode(matte=args.matte, grid=parse_wh(args.grid),
                              n=args.particles, flock=args.flock, glitch=args.glitch)
@@ -216,4 +222,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # Circuit Bender bends in a spawned worker process; a frozen build must
+    # not re-run the launcher in it
+    multiprocessing.freeze_support()
     main()
