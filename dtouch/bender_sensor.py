@@ -28,11 +28,14 @@ keep the outlines. Never 8x8 squares: those are a file's, not a sensor's.
 
 Two more whole looks follow it, each one fault taken all the way, tuned by
 eye against bent-camera footage:
-  THERMAL      a runaway gain line: values wrap round per colour, so smooth
-               areas come back as false-colour rings, the shadows speckle,
-               blown highlights streak right
-  LINE STREAK  a leaky sample-and-hold: in bands of lines every edge drags
-               into a long streak to the right, in a magenta cast
+  THERMAL      wrapped data bits: the brightness runs through a repeating
+               palette, so gradients come back as many thin rainbow rings
+               round every light, shadows near-black, grain boiling, edges
+               rimmed
+  LINE STREAK  a sticking line readout: single rows drag a sample right as
+               thin threads, bands repeat lower down, all hard cuts, in a
+               magenta cast
+Both work on RGB, after the demosaic.
 
 Everything moves with `t` (seconds) through slow value noise: the fault
 drifts like a finger on a circuit board. The seed picks which fault.
@@ -65,20 +68,41 @@ ICONIC = 3
 # BENT CAM's three faults, weighed
 BENT_MIX = {"cast": 1.0, "slip": 0.7, "adc": 0.45}
 
-# THERMAL: the gain spread across the three colours (gain - 1 at amount 1 is
-# THERMAL_GAIN[0] + THERMAL_GAIN[1] x a per-colour hash), the shadow noise at
-# amount 1, the low bits dropped at amount 1, and how many times a second the
-# noise is drawn again.
-THERMAL_GAIN = (1.6, 4)
-THERMAL_NOISE = 70
-THERMAL_POSTER = 2.5
-THERMAL_NOISE_HZ = 6
+# THERMAL: the rings across the brightness range (RINGS[0] + RINGS[1] x
+# amount), where the colour starts (luma SHADOW[0], rising SHADOW[1] a
+# level), the grain's density at amount 1 (out of 256) and how many times a
+# second it is drawn again, and the edge rim (a luma step over EDGE[0],
+# EDGE[1] a level). The palettes: two complementary hues per mode plus
+# their neighbours, flat bands in turn, cyclic; the touch seed picks one, so
+# a new touch is a hard cut to another mode.
+THERMAL_RINGS = (4, 8)
+THERMAL_SHADOW = (40, 4)
+THERMAL_GRAIN = 40
+THERMAL_NOISE_HZ = 24
+THERMAL_EDGE = (110, 3)
+# the ring field's box blur radius
+THERMAL_BLUR = 3
+THERMAL_PALETTES = (
+    # neon: pink and green, with violet, cyan, yellow, orange
+    ((255, 40, 200), (120, 30, 160), (40, 220, 230), (40, 230, 70), (240, 230, 50), (255, 120, 40)),
+    # ccd: violet and yellow-green
+    ((150, 60, 255), (60, 20, 120), (200, 240, 60), (120, 140, 30), (255, 230, 90), (255, 90, 180)),
+    # night: red and green
+    ((240, 40, 40), (90, 10, 20), (40, 220, 60), (10, 80, 20), (255, 140, 30), (190, 240, 40)),
+)
 
-# LINE STREAK: the magenta cast at amount 1 (green sinks this far below)
-STREAK_CAST = 1.4
-# a sample this much brighter than the hold takes it over: streaks start at
-# bright edges
-STREAK_GRAB = 40
+# LINE STREAK: the magenta cast at amount 1 (green scaled down this far),
+# the hard cuts a second, the streak bands as a fraction of the height
+# (BAND[0] + BAND[1] x a hash), a band's odds (P_BAND[0] + P_BAND[1] x
+# amount) and a row's inside it, the luma a sample must beat the hold by to
+# take it over, and the odds of a repeated band and how far down it lands.
+STREAK_CAST = 0.5
+STREAK_HZ = 6
+STREAK_BAND = (0.06, 0.2)
+STREAK_P_BAND = (0.4, 0.5)
+STREAK_P_ROW = (0.5, 0.45)
+STREAK_GRAB = 16
+STREAK_REPEAT = (0.3, 0.5)
 
 _M32 = 0xFFFFFFFF
 
@@ -319,90 +343,118 @@ def green_bias(raw, bias):
     return raw
 
 
-def thermal(raw, amount, seed, t):
-    """THERMAL: a bent gain line. The amplifier in front of the ADC runs too
-    hot, so values overflow and wrap round, each colour at its own level:
-    a smooth sky comes back as false-colour rings that follow its
-    brightness, like a thermal camera. The same runaway gain lifts the
-    sensor's dark noise into coloured speckle in the shadows, the low bits
-    drop out (posterised bands that keep their edges), and blown highlights
-    spill along their line to the right. The rings crawl as the offsets
-    drift; the speckle is drawn again THERMAL_NOISE_HZ times a second."""
-    h, w = raw.shape
+def luma(p):
+    """Integer Rec. 601 luma 0..255 of RGB int arrays (..., 3)."""
+    return (306 * p[..., 0] + 601 * p[..., 1] + 117 * p[..., 2]) >> 10
+
+
+def box_blur(v, r):
+    """Integer box mean over a (2r+1)^2 window, edges clamped: floor of the
+    window sum over its area (the browser's running sums give the same)."""
+    k = 2 * r + 1
+    p = np.pad(v.astype(np.int64), r, mode="edge")
+    c = np.cumsum(p, axis=1)
+    c = np.pad(c, ((0, 0), (1, 0)))
+    hs = c[:, k:] - c[:, :-k]
+    c = np.cumsum(hs, axis=0)
+    c = np.pad(c, ((1, 0), (0, 0)))
+    return (c[k:] - c[:-k]) // (k * k)
+
+
+def palette_lut(keys):
+    """A cyclic 256-entry palette of flat bands, one per key colour (no
+    blend: a blend between complementary hues is grey)."""
+    n = len(keys)
+    return np.array([keys[(i * n) >> 8] for i in range(256)], dtype=np.int64)
+
+
+def thermal(px, amount, seed, t):
+    """THERMAL, on RGB: shorted high data bits make values wrap, so the
+    brightness runs through a repeating palette (palette(fract(luma x N)))
+    and smooth gradients come back as many thin false-colour rings, denser
+    toward the brights, hugging every light. The shadows stay near-black
+    (the colour lives in the mids and highs), chunky saturated grain boils
+    in the bands and is drawn again every frame, and outlines keep a thin
+    bright rim. The rings follow the picture; the palette mode is a hard
+    cut on a new touch."""
+    h, w = px.shape[:2]
     a = _clamp(amount, 0, 1)
-    v = raw.astype(np.int64)
-    idx = np.arange(h * w, dtype=np.int64).reshape(h, w)
+    p = px[..., :3].astype(np.int64)
+    y = luma(p)
+    mode = math.floor(hash01(seed, 80) * len(THERMAL_PALETTES))
+    lut = palette_lut(THERMAL_PALETTES[mode])
+    n = THERMAL_RINGS[0] + _jround(THERMAL_RINGS[1] * a)
+    off = math.floor(256 * hash01(seed, 81))       # per touch: rings follow the picture only
+    # the rings follow the light, not the texture: a box-blurred luma
+    ys = box_blur(y, THERMAL_BLUR)
+    col = lut[(((ys * ys * n) >> 8) + off) & 255]
+    wgt = np.clip((y - THERMAL_SHADOW[0]) * THERMAL_SHADOW[1], 0, 256)
+    shadow = np.stack([y >> 1, y >> 3, y >> 1], -1)
+    out = (col * wgt[..., None] + shadow * (256 - wgt)[..., None]) >> 8
+    # grain: 2x2 cells of a random palette colour, dim in the shadows
     frame = math.floor(t * THERMAL_NOISE_HZ)
-    spark = (hash32_grid(idx, frame, (seed ^ 0x7E57) & _M32) >> np.uint64(24)).astype(np.int64)
-    amp = _jround(a * THERMAL_NOISE)
-    dark = 255 - v
-    noise = ((spark - 128) * amp * ((dark * dark * dark) >> 16)) >> 15
-    out = np.empty_like(v)
-    sites = (((0, 0), 0), ((0, 1), 1), ((1, 0), 1), ((1, 1), 2))
-    gains, offs = [], []
-    for c in range(3):
-        breathe = 0.7 + 0.3 * vnoise(t * 0.09, seed + 61 + c)
-        gains.append(256 + _jround(256 * a * (THERMAL_GAIN[0] + THERMAL_GAIN[1]
-                                               * hash01(seed, 60 + c)) * breathe))
-        offs.append(math.floor(256 * vnoise(t * 0.05 + c * 3.1, seed + 64 + c)))
-    for (oy, ox), c in sites:
-        s = v[oy::2, ox::2]
-        out[oy::2, ox::2] = ((s * gains[c]) >> 8) + ((offs[c] * s) >> 8) + noise[oy::2, ox::2]
-    out &= 255
-    drop = 1 + math.floor(THERMAL_POSTER * a)
-    out &= 255 & ~((1 << drop) - 1)
-    # blown highlights spill right along their line
-    knee = 232 - _jround(30 * a)
-    keep = 0.9 + 0.07 * a
-    gain = 0.25 + 0.4 * a
-    rows = np.nonzero((v > knee).any(axis=1))[0]     # only lines with a highlight
-    if rows.size:
-        hv = v[rows]
-        ho = out[rows]
-        q = np.zeros(rows.size, dtype=np.float64)
-        for x in range(int(np.argmax((hv > knee).any(axis=0))), w):
-            src = hv[:, x]
-            q = q * keep + np.where(src > knee, (src - knee) * gain, 0.0)
-            hot = q > 0.5
-            if hot.any():
-                ho[hot, x] = np.minimum(255, ho[hot, x] + np.floor(q[hot]).astype(np.int64))
-        out[rows] = ho
+    yy, xx = np.mgrid[0:h, 0:w]
+    cell = (xx >> 1) + (yy >> 1) * ((w + 1) >> 1)
+    r = hash32_grid(cell, frame, (seed ^ 0x6A1) & _M32).astype(np.int64)
+    hit = (r >> 24) < _jround(a * THERMAL_GRAIN)
+    grain = (lut[(r >> 8) & 255] * (64 + ((3 * wgt) >> 2))[..., None]) >> 8
+    out = np.where(hit[..., None], grain, out)
+    # edges: a thin bright rim where the luma steps
+    yp = np.pad(y, 1, mode="edge")
+    e = np.abs(yp[1:-1, 2:] - yp[1:-1, :-2]) + np.abs(yp[2:, 1:-1] - yp[:-2, 1:-1])
+    k = np.clip((e - THERMAL_EDGE[0]) * THERMAL_EDGE[1], 0, 256)
+    out = out + (((255 - out) * k[..., None]) >> 8)
     return out.astype(np.uint8)
 
 
-def line_streak(raw, amount, seed, t):
-    """LINE STREAK: a sample-and-hold that leaks. In smeared bands of lines
-    the readout holds each sample and lets it go only slowly along the
-    line, so every edge drags into a long streak to the right; a bright
-    sample takes the hold over at once, so streaks start at bright edges.
-    The hold runs per Bayer phase (the colours stay put), the green sites
-    sink (the magenta cast of a bent clock), and the bands come and go."""
-    h, w = raw.shape
+def line_streak(px, amount, seed, t):
+    """LINE STREAK, on RGB: the line readout sticks. In bands of rows, single
+    rows (1 to 3 px threads) hold a sample from a random point and drag it
+    right to the edge of the frame; a brighter sample takes the hold over,
+    so bright edges streak furthest. Sometimes a whole band of rows is read
+    again a third of the frame lower. Everything is a hard cut, STREAK_HZ
+    times a second, in a magenta cast."""
+    h, w = px.shape[:2]
     a = _clamp(amount, 0, 1)
-    green_bias(raw, -STREAK_CAST * (10 + 40 * a))
-    v = raw.astype(np.float64)
-    out = v.copy()
-    band_h = max(2, _jround(h * (0.006 + 0.02 * hash01(seed, 70))))
-    p = 0.3 + 0.6 * a
-    keep_hi = 0.93 + 0.06 * a
-    live = np.zeros(h, dtype=bool)
-    keep = np.zeros(h, dtype=np.float64)
+    src = px[..., :3].astype(np.int64)
+    k = _jround(256 * STREAK_CAST * a)
+    src[..., 1] = (src[..., 1] * (256 - k)) >> 8
+    out = src.copy()
+    frame = math.floor(t * STREAK_HZ)
+    # a repeated band
+    if hash01(frame, seed, 90) < STREAK_REPEAT[0] + STREAK_REPEAT[1] * a:
+        bh = max(2, _jround(h * (0.05 + 0.12 * hash01(frame, seed, 91))))
+        y0 = math.floor(hash01(frame, seed, 92) * (h - bh))
+        rows = np.arange(y0, y0 + bh)
+        out[rows] = src[(rows - _jround(h / 3)) % h]
+    base = out.copy()
+    band_h = max(4, _jround(h * (STREAK_BAND[0] + STREAK_BAND[1] * hash01(seed, 93))))
+    p_band = STREAK_P_BAND[0] + STREAK_P_BAND[1] * a
+    p_row = STREAK_P_ROW[0] + STREAK_P_ROW[1] * a
+    live, x0 = [], []
     for y in range(h):
-        band = math.floor((y + t * h * 0.01) / band_h)
-        live[y] = hash01(band, seed, 71) < p and vnoise(t * 0.3 + band * 0.7, seed + 72) > 0.3
-        keep[y] = keep_hi - 0.08 * hash01(band, seed, 73)
-    if live.any():
-        rows = np.nonzero(live)[0]
-        k = keep[rows]
-        lk = 1 - k
-        for par in (0, 1):
-            q = v[rows, par].copy()
-            for x in range(par + 2, w, 2):
-                s = v[rows, x]
-                q = q * k + s * lk
-                q = np.where(s > q + STREAK_GRAB, s, q)
-                out[rows, x] = q
-    return np.floor(out).astype(np.uint8)
+        if (hash01(y // band_h, frame, seed ^ 0x51) < p_band
+                and hash01(y, frame, seed ^ 0x52) < p_row):
+            live.append(y)
+            x0.append(math.floor(hash01(y, frame, seed ^ 0x53) * w * 0.7))
+    if live:
+        rows = np.array(live)
+        starts = np.array(x0)
+        ly = luma(base[rows])
+        held = base[rows, starts].copy()
+        hl = ly[np.arange(len(rows)), starts]
+        for x in range(int(starts.min()) + 1, w):
+            on = x > starts
+            take = on & (ly[:, x] > hl + STREAK_GRAB)
+            held[take] = base[rows[take], x]
+            hl = np.where(take, ly[:, x], hl)
+            out[rows[on], x] = held[on]
+    return out.astype(np.uint8)
+
+
+# THERMAL and LINE STREAK work on RGB, after the camera's demosaic: what the
+# processor hands on, not what the sensor read.
+RGB_BENDS = {"thermal": thermal, "streak": line_streak}
 
 
 def bent_cam(raw, amount, seed, t, mix=None):
@@ -433,10 +485,11 @@ def sensor_bend(px, effect, amount, seed=1, t=0.0, mix=None):
     if a == 0 or effect not in SENSOR_EFFECTS or w < 4 or h < 4:
         return px
     seed = int(seed) & _M32
+    if effect in RGB_BENDS:
+        return RGB_BENDS[effect](px, a, seed, t)
     raw = mosaic(px)
     if effect == "bent":
         bent = bent_cam(raw, a, seed, t, mix)
     else:
-        bent = {"thermal": thermal, "streak": line_streak, "hclock": h_clock,
-                "vclock": v_clock, "adc": adc_bits}[effect](raw, a, seed, t)
+        bent = {"hclock": h_clock, "vclock": v_clock, "adc": adc_bits}[effect](raw, a, seed, t)
     return demosaic(bent)

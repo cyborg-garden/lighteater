@@ -218,44 +218,79 @@ def _hue_jumps(row):
     return int((dom[1:] != dom[:-1]).sum())
 
 
-def test_thermal_wraps_a_smooth_ramp_into_rainbow_rings():
-    """A smooth grey ramp, the sky in every bent-camera thermal shot, comes
-    back as many false-colour bands: each channel wraps at its own level."""
-    ramp = np.tile(np.linspace(40, 230, 256).astype(np.uint8)[None, :, None], (32, 1, 3))
+def _ring_count(row):
+    """Colour changes along a row: a hue jump or a big step in value."""
+    r = row.astype(int)
+    return int((np.abs(np.diff(r, axis=0)).sum(-1) > 90).sum())
+
+
+def test_thermal_turns_a_smooth_ramp_into_many_thin_rings():
+    """A smooth grey ramp, the sky round every light in the footage, comes
+    back as many thin false-colour rings, denser toward the brights."""
+    ramp = np.tile(np.linspace(0, 255, 512).astype(np.uint8)[None, :, None], (8, 1, 3))
     out = S.sensor_bend(ramp, "thermal", 0.6, 7, 3.0)
-    mid = out[16:18].reshape(-1, 256, 3)[0]
-    assert _hue_jumps(ramp[16]) <= 2
-    assert _hue_jumps(mid) >= 6
+    row = out[4]
+    assert _hue_jumps(ramp[4]) <= 2
+    assert _ring_count(row) >= 10
+    assert _ring_count(row[384:]) > _ring_count(row[128:256])
 
 
-def test_thermal_sparkles_the_shadows_more_than_the_lights():
+def test_thermal_keeps_the_shadows_near_black_and_colours_the_brights():
     px = np.zeros((64, 128, 3), np.uint8)
     px[:, :64] = 18                       # shadow
     px[:, 64:] = 200                      # light
-    out = S.sensor_bend(px, "thermal", 0.6, 5, 1.0).astype(float)
-    def spread(a):
-        return a.reshape(-1, 3).std(0).mean()
-    assert spread(out[4:-4, 4:60]) > 2 * spread(out[4:-4, 68:-4])
+    out = S.sensor_bend(px, "thermal", 0.6, 5, 1.0).astype(int)
+    shadow, light = out[4:-4, 4:60], out[4:-4, 68:-4]
+    assert np.median(shadow.max(-1)) < 24
+    sat = light.max(-1) - light.min(-1)
+    assert np.median(sat) > 100
 
 
-def test_thermal_drags_blown_highlights_to_the_right():
-    px = np.full((24, 96, 3), 60, np.uint8)
-    px[8:16, 20:24] = 255
-    out = S.sensor_bend(px, "thermal", 0.8, 3, 0.0).astype(int)
-    far = out[8:16, 70:84].mean()
-    right = np.abs(out[8:16, 28:42].mean() - far)
-    left = np.abs(out[8:16, 4:18].mean() - far)
-    assert right > left + 10
+def test_thermal_grain_boils_every_frame_but_the_rings_hold():
+    ramp = np.tile(np.linspace(60, 255, 128).astype(np.uint8)[None, :, None], (64, 1, 3))
+    a = S.sensor_bend(ramp, "thermal", 0.6, 7, 3.00)
+    b = S.sensor_bend(ramp, "thermal", 0.6, 7, 3.05)
+    moved = (np.abs(a.astype(int) - b).sum(-1) > 0).mean()
+    assert 0.01 < moved < 0.3             # the grain moved, the rings did not
 
 
-def test_line_streak_drags_edges_right_in_a_purple_cast():
+def test_thermal_rims_a_hard_edge():
+    px = np.full((32, 64, 3), 10, np.uint8)
+    px[:, 32:] = 220
+    out = S.sensor_bend(px, "thermal", 0.6, 2, 0.0).astype(int)
+    rim = out[8:24, 31:33].sum(-1).mean()
+    inside = np.median(out[8:24, 44:56].sum(-1))
+    assert rim > inside + 60
+
+
+def test_line_streak_drags_thin_threads_right_in_a_purple_cast():
     px = np.full((96, 128, 3), 30, np.uint8)
     px[:, 40:44] = 230                    # a bright post
-    out = S.sensor_bend(px, "streak", 0.8, 9, 2.0).astype(float)
-    after = out[:, 50:90].mean()
-    before = out[:, 4:36].mean()
-    assert after > before + 8             # streaks run right of the post
+    out = S.sensor_bend(px, "streak", 0.8, 9, 2.0).astype(int)
+    after = out[:, 50:120].mean(axis=(1, 2))
+    lit = after > 120                     # rows streaked from the post
+    assert lit.sum() >= 6
+    # threads, not slabs: lit rows come in short runs
+    runs, n = [], 0
+    for v in lit:
+        if v:
+            n += 1
+        elif n:
+            runs.append(n)
+            n = 0
+    if n:
+        runs.append(n)
+    assert np.median(runs) <= 3
     assert out[..., 1].mean() < (out[..., 0].mean() + out[..., 2].mean()) / 2
+
+
+def test_line_streak_cuts_hard_between_frames():
+    px = np.tile(np.linspace(0, 255, 96).astype(np.uint8)[None, :, None], (64, 1, 3))
+    a = S.sensor_bend(px, "streak", 0.8, 4, 1.00)
+    b = S.sensor_bend(px, "streak", 0.8, 4, 1.01)     # same cut
+    c = S.sensor_bend(px, "streak", 0.8, 4, 1.40)     # the next cuts
+    assert np.array_equal(a, b)
+    assert not np.array_equal(a, c)
 
 
 def test_the_iconic_bends_come_first():
