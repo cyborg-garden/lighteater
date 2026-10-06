@@ -359,6 +359,10 @@ class OverlayUI:
         self._thumb_drag = None  # grabbed the scrollbar thumb (not the content)
         self._tooltip = None
         self.pending_preset = None
+        # set with pending_preset when the shell is LANDING (a first entry,
+        # panic): after the look applies, the mode's optional landing() hook
+        # runs (physarum lands in the molten ink)
+        self.land_pending = False
         self.pending_save = False
         # per-mode perform state (DESIGN.md §7): explicit slot assignments and
         # setlist order for the ACTIVE mode, seeded by the shell. An empty

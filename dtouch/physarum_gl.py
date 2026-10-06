@@ -229,6 +229,25 @@ class PhysarumFieldGL:
         self.bloom = NO_BLOOM
         self.bloom_t = 0.0
         self.fractal_error = None  # set when the fractal passes cannot build
+        # the alive fractal step (dtouch.physarum_alive): off unless the host
+        # asks; runs only with the fractal amount above 0. The host feeds
+        # the scene inputs and the per-frame values below.
+        self.alive = False
+        self.alive_error = None    # set when an alive pass fails; stock from then on
+        self._alive = None         # the AliveGL, built on first use
+        self._alive_was = False
+        self.alive_dt = 1.0 / 60.0
+        self.alive_scene_in = (None, None)   # (motion RGBA, matte) at scene_size
+        self.alive_react = 0.0     # the react lever, perceptually mapped
+        self.alive_person = False  # a person matte is live (the dome weighs more)
+        self.alive_sound = 0.0     # sens x amplitude (quickens the pulse)
+        # what the alive step itself costs a frame, ms: its GPU time (timer
+        # queries, read a frame late) plus the CPU time of its own calls,
+        # for the host's governor. 0 until measured or while it is off.
+        self.alive_ms = 0.0
+        self._aq_now, self._aq_prev, self._aq_free = [], [], []
+        self._acpu_now = self._acpu_prev = 0.0
+        self._aq_ok = True
         self._nl = None            # per-level bright ends (level_norms)
         self._stats_pbo = None     # fractal stats, read a frame late (_stats_late)
         self._stats_pending = False
@@ -350,26 +369,15 @@ class PhysarumFieldGL:
         self.fbo_lum = ctx.framebuffer(color_attachments=[self.tex_lum])
 
         # constant uniforms + sampler units
-        for p in (self.p_update, self.p_deposit, self.p_impulse):
+        for p in (self.p_deposit, self.p_impulse):
             p["u_aw"].value = aw
-        for p in (self.p_update, self.p_deposit, self.p_blur, self.p_stats,
-                  self.p_impulse):
+        for p in (self.p_deposit, self.p_stats, self.p_impulse):
             p["u_grid"].value = (gw, gh)
-        # the spatial regime table is constant for the field's life
-        reg = [SPATIAL_REGIMES[k] for k in SPATIAL_REGIMES]
-        self.p_update["u_zreg"].value = [
-            (r["sense"], r["turn"], r["spread"], r["step"]) for r in reg]
-        self.p_update["u_zcross"].value = [r["cross"] for r in reg]
-        self.p_update["u_agents"].value = 0
-        self.p_update["u_trail"].value = 1
-        self.p_update["u_matte"].value = 2
-        self.p_update["u_gray"].value = 3
+        self._update_consts(self.p_update)
         self.p_deposit["u_agents"].value = 0
         self.p_deposit["u_matte"].value = 2
         self.p_deposit["u_nspec"].value = float(self.species)
-        self.p_blur["u_src"].value = 0
-        self.p_blur["u_add"].value = 1
-        self.p_blur["u_keep"].value = 2
+        self._blur_consts(self.p_blur)
         self.p_stats["u_trail"].value = 0
         self.p_stats["u_laid"].value = 1
         self.p_stats["u_stride"].value = STATS_STRIDE
@@ -378,7 +386,7 @@ class PhysarumFieldGL:
         self.p_impulse["u_agents"].value = 0
         # the stock engine never reads these; set once so a first fractal
         # frame never runs on GL defaults
-        for p in (self.p_update, self.p_deposit, self.p_blur, self.p_stats):
+        for p in (self.p_deposit, self.p_stats):
             p["u_fractal"].value = 0.0
         self._pf = None           # the fractal-only programs, built on first use
         self.tex_fields = self.fbo_fields = None
@@ -391,6 +399,191 @@ class PhysarumFieldGL:
         self._deposit(1.0, 1.0)
         self.fbo_laid.use()
         ctx.clear(0.0, 0.0, 0.0, 1.0)
+
+    def _update_consts(self, p):
+        """update.frag's constant uniforms and sampler units: the stock
+        program's, and the alive copy's (the same file plus marked blocks)."""
+        p["u_aw"].value = self.aw
+        p["u_grid"].value = (self.gw, self.gh)
+        # the spatial regime table is constant for the field's life
+        reg = [SPATIAL_REGIMES[k] for k in SPATIAL_REGIMES]
+        p["u_zreg"].value = [(r["sense"], r["turn"], r["spread"], r["step"]) for r in reg]
+        p["u_zcross"].value = [r["cross"] for r in reg]
+        p["u_agents"].value = 0
+        p["u_trail"].value = 1
+        p["u_matte"].value = 2
+        p["u_gray"].value = 3
+        p["u_fractal"].value = 0.0
+
+    def _blur_consts(self, p):
+        """blur.frag's constant uniforms and sampler units (stock and alive)."""
+        p["u_grid"].value = (self.gw, self.gh)
+        p["u_src"].value = 0
+        p["u_add"].value = 1
+        p["u_keep"].value = 2
+        p["u_fractal"].value = 0.0
+
+    # ----- the alive fractal step -----
+    def alive_on(self):
+        """Whether this frame runs the alive step (dtouch.physarum_alive):
+        only on the fractal step, only when the host asked and the GPU built
+        it. Builds the passes on first use; a build that fails records
+        alive_error and the stock fractal step runs instead."""
+        if not (self.alive and self.alive_error is None):
+            return False
+        if self._fractal_amount() <= 0.0:
+            return False
+        if self._alive is None:
+            try:
+                from .physarum_alive import AliveGL
+                A = AliveGL(self)
+                self._update_consts(A.prog["update"])
+                self._blur_consts(A.prog["blur"])
+                pc = A.prog["compose"]
+                pc["u_fields"].value, pc["u_stock"].value, pc["u_line"].value = 0, 1, 3
+                self._alive = A
+            except Exception as e:                  # noqa: BLE001 — §6.4
+                self.alive_error = str(e) or type(e).__name__
+                print("alive step unavailable:", e)
+                return False
+        return True
+
+    def _alive_fail(self, err):
+        """One way down for every alive failure after construction: record
+        it, free the passes, and leave whatever a half-run pass set back to
+        the stock state. Every later pass asks alive_on() again, which now
+        says no, so the stock fractal step runs this same frame."""
+        self.alive_error = str(err) or type(err).__name__
+        print("alive step failed, stock fractal from here on:", err)
+        gl = self._gl
+        try:
+            self.ctx.disable(gl.BLEND | gl.PROGRAM_POINT_SIZE)
+            if self._alive is not None:
+                self._alive._unbind()
+                self._alive.release()
+        except Exception:                           # noqa: BLE001 — ctx gone
+            pass
+        self._alive = None
+        self._alive_was = False
+
+    def _alive_timed(self, fn):
+        """Run fn (alive GL work) under a GPU timer query and a CPU clock;
+        both feed alive_ms. A context without timer queries falls back to
+        the CPU time alone."""
+        import time
+        t0 = time.perf_counter()
+        q = None
+        if self._aq_ok:
+            try:
+                q = self._aq_free.pop() if self._aq_free else self.ctx.query(time=True)
+            except Exception:                           # noqa: BLE001
+                self._aq_ok, q = False, None
+        try:
+            if q is not None:
+                with q:
+                    return fn()
+            return fn()
+        finally:
+            if q is not None:
+                self._aq_now.append(q)
+            self._acpu_now += time.perf_counter() - t0
+
+    def _alive_frame(self):
+        """A new frame: last frame's alive cost becomes alive_ms. Its timer
+        queries are read now, a frame late, when their result is ready (the
+        last frame's readback already waited for that work)."""
+        gpu = 0.0
+        for q in self._aq_prev:
+            try:
+                gpu += q.elapsed * 1e-6
+            except Exception:                           # noqa: BLE001
+                pass
+            self._aq_free.append(q)
+        ran = bool(self._aq_prev) or self._acpu_prev > 0.0
+        self.alive_ms = gpu + self._acpu_prev if ran else 0.0
+        self._aq_prev, self._aq_now = self._aq_now, []
+        self._acpu_prev, self._acpu_now = self._acpu_now, 0.0
+
+    def _gl_drain(self):
+        """Clear any GL error an earlier, unrelated call left set, so the
+        check after an alive pass reads that pass alone (GL keeps one flag
+        per error kind; a handful of reads empties them)."""
+        for _ in range(8):
+            if self.ctx.error == "GL_NO_ERROR":
+                return
+
+    def _gl_check(self, where):
+        """Raise on a GL error (an out-of-memory allocation or an invalid
+        call raises nothing in moderngl: it only sets the flag)."""
+        err = self.ctx.error
+        if err != "GL_NO_ERROR":
+            raise RuntimeError(f"{where}: {err}")
+
+    def _alive_do(self, fn, where="alive pass"):
+        if self._alive is None or not self.alive_on():
+            return
+        try:
+            self._gl_drain()
+            self._alive_timed(lambda: fn(self._alive))
+            self._gl_check(where)
+        except Exception as e:                      # noqa: BLE001 — §6.4
+            self._alive_fail(e)
+
+    def alive_display(self):
+        """Whether the host should draw this frame with ink_frame(): the
+        alive step is on and the ink look is (ALIVE['ink'] >= 0)."""
+        from .alive import ALIVE
+        if ALIVE["ink"] < 0:
+            return False
+        with self.ctx:            # a first call may build the passes
+            return self.alive_on()
+
+    def ink_frame(self, lut_rows, pal_row, video_rgb=None, bg="off", video_mix=0.5,
+                  out_size=None, target=None):
+        """One frame's picture in the molten ink: stats, the fractal fields,
+        the alive compose, then ink.frag (drawn at most INK_MAX_PX pixels),
+        flipped and upscaled on the GPU to out_size (default render_size()).
+
+        With `target` (an RGBA8 framebuffer of out_size, e.g. the GPU rack's
+        source) the picture lands there and nothing is read back: returns
+        True. Otherwise returns (h, w, 3) uint8 RGB, row 0 at the top. None
+        when the trail is empty or an alive pass failed (the host colourises
+        luminance() instead). Any GL error in the ink counts as a failure.
+        Binds this field's context; inside a caller's `with self.ctx:` use
+        ink_frame_bound (moderngl's restore slot does not nest)."""
+        with self.ctx:
+            return self.ink_frame_bound(lut_rows, pal_row, video_rgb, bg, video_mix,
+                                        out_size, target)
+
+    def ink_frame_bound(self, lut_rows, pal_row, video_rgb=None, bg="off",
+                        video_mix=0.5, out_size=None, target=None):
+        """ink_frame for a caller that already holds this field's context."""
+        ok = self.luminance_into_tex()
+        if not ok or self._alive is None or self._alive.out is None or not self.alive_on():
+            return None
+        ow, oh = out_size or self.render_size()
+        A = self._alive
+        try:
+            self._gl_drain()
+            self._alive_timed(lambda: A.ink_draw(lut_rows, pal_row, video_rgb, bg, video_mix))
+            if target is not None:
+                self._alive_timed(lambda: A.ink_blit(target, int(ow), int(oh)))
+                A.free_readback()          # the rack reads: no output-size copy here
+                self._gl_check("alive ink")
+                return True
+            img = A.ink_read(int(ow), int(oh), timed=self._alive_timed)
+            self._gl_check("alive ink")
+            return img
+        except Exception as e:                      # noqa: BLE001 — §6.4
+            self._alive_fail(e)
+            return None
+
+    def alive_stats(self):
+        """The alive step's counts (events, tips, the pulse), None while it
+        is not running."""
+        if self._alive is None or not (self.alive and self.alive_error is None):
+            return None
+        return self._alive.stats()
 
     # ----- fractal veins -----
     def _fractal_amount(self):
@@ -508,7 +701,17 @@ class PhysarumFieldGL:
         ctx, gl = self.ctx, self._gl
         r = int(self.diffuse) if self.diffuse > 0 else 0
         k = 2 * r + 1
-        p = self.p_blur
+        # the alive copy prunes (threads nobody walks withdraw); its blocks
+        # read the deposit memory, set in both passes
+        A = self._alive if (self._alive is not None and self.alive_on()) else None
+        if A is not None:
+            try:
+                A.blur_uniforms(A.prog["blur"], fa)
+            except Exception as e:                  # noqa: BLE001 — §6.4
+                self._alive_fail(e)
+                A = None
+        p = A.prog["blur"] if A is not None else self.p_blur
+        vao_blur = A.vao["blur"] if A is not None else self.vao_blur
         p["u_radius"].value = r
         p["u_wide"].value = max(3 * r, r + 2)
         p["u_fractal"].value = float(fa)
@@ -544,7 +747,7 @@ class PhysarumFieldGL:
         p["u_scale"].value = 1.0 / k
         if fa > 0.0:
             p["u_decayC"].value = (1.0, 1.0, 1.0)     # the H pass does not decay
-        self.vao_blur.render(gl.TRIANGLES, vertices=3)
+        vao_blur.render(gl.TRIANGLES, vertices=3)
         # V: tmp -> trail_b, times decay (per-pixel when a keep map rode in)
         self.fbo_trail_b.use()
         self.tex_tmp.use(0)
@@ -557,7 +760,9 @@ class PhysarumFieldGL:
         p["u_scale"].value = 1.0 / k
         if fa > 0.0:
             p["u_decayC"].value = decay_c
-        self.vao_blur.render(gl.TRIANGLES, vertices=3)
+        vao_blur.render(gl.TRIANGLES, vertices=3)
+        if A is not None:
+            A._unbind()
         self.tex_trail_a, self.tex_trail_b = self.tex_trail_b, self.tex_trail_a
         self.fbo_trail_a, self.fbo_trail_b = self.fbo_trail_b, self.fbo_trail_a
 
@@ -583,13 +788,40 @@ class PhysarumFieldGL:
         matte = np.ascontiguousarray(matte, dtype=np.float32)
         gray = np.ascontiguousarray(gray, dtype=np.float32)
         with self.ctx:
+            self._alive_frame()
             self.tex_matte.write(matte)
             self.tex_gray.write(gray)
             if keep is not None:
                 self.tex_keep.write(np.ascontiguousarray(keep, np.float32))
 
+            # the alive step's own passes, around the stock ones: the scene
+            # before the update, the trail's age after the deposit, the
+            # network (connections, their light, the pulse) after the blur.
+            # The step turned off (flat, depth, a look change): free its
+            # targets. Each half falls back to the stock path on failure.
+            alive = self.alive_on()
+            if not alive and self._alive_was and self._alive is not None:
+                self._alive.free_targets()
+            if alive and not self._alive_was:
+                for k in self._alive.fresh:
+                    self._alive.fresh[k] = True
+            self._alive_was = alive
+            adt = min(max(float(self.alive_dt), 0.0), 0.1)
+            if alive:
+                self._alive_do(lambda A: A.step_scene(adt), "alive scene")
+
             a, b = self._points()
-            p = self.p_update
+            fa = self._fractal_amount()
+            # pick the program BEFORE any uniform goes on it: the alive
+            # copy's own uniforms first, so a failure there falls back to the
+            # stock program while nothing has been set on either yet
+            p, vao_update = self.p_update, self.vao_update
+            if self._alive is not None and self.alive_on():
+                try:
+                    self._alive.update_uniforms(self._alive.prog["update"], fa)
+                    p, vao_update = self._alive.prog["update"], self._alive.vao["update"]
+                except Exception as e:            # noqa: BLE001 — §6.4
+                    self._alive_fail(e)
             ms, mt, msp = self.mod_sense, self.mod_turn, self.mod_spread
             mst = self.mod_step
             p["u_sense"].value = (a["sense"] * ms, b["sense"] * ms)
@@ -627,7 +859,6 @@ class PhysarumFieldGL:
             # ~0.55 s at 60 fps, then steering is fully back
             self.ballistic *= BALLISTIC_DECAY
             p["u_time"].value = self.frame * (1.0 / 60.0)
-            fa = self._fractal_amount()
             p["u_fractal"].value = fa
             if fa > 0.0:
                 self._update_fractal_uniforms(p, fa)
@@ -644,12 +875,16 @@ class PhysarumFieldGL:
             self.tex_trail_a.use(1)
             self.tex_matte.use(2)
             self.tex_gray.use(3)
-            self.vao_update.render(gl.TRIANGLES, vertices=3)
+            vao_update.render(gl.TRIANGLES, vertices=3)
+            if self._alive is not None:
+                self._alive._unbind()
             self._swap_agents()
 
             md = self.mod_deposit
             self._deposit(a["deposit"] * md, b["deposit"] * md, fa)
+            self._alive_do(lambda A: A.step_life(adt), "alive life")
             self._blur_decay(use_keep=keep is not None, fa=fa)
+            self._alive_do(lambda A: A.step_network(adt), "alive network")
         self.frame += 1
 
     def _update_fractal_uniforms(self, p, fa):
@@ -876,7 +1111,38 @@ class PhysarumFieldGL:
         self._pf["vao_tonemap"].render(gl.TRIANGLES, vertices=3)
 
         rw, rh = self._lum_hi_target()
-        pc = self._pf["compose"]
+        # the alive step composes into its own RGBA picture (r whole, g
+        # veins, b accents), draws the tips over it, and copies .r into
+        # tex_lum_hi so luminance() and the rack read the alive picture
+        A = self._alive if (self._alive is not None and self.alive_on()) else None
+        if A is not None:
+            try:
+                self._gl_drain()
+                A.targets()
+                out_fbo = A.out_for(rw, rh)[1]
+                def alive_compose():
+                    self._compose(A.prog["compose"], A.vao["compose"], out_fbo, fa, rw, rh,
+                                  extra=lambda pc: A.compose_uniforms(pc, fa))
+                    A._unbind()
+                    A.draw_heads()
+                    A.copy_luminance(self.fbo_lum_hi)
+                self._alive_timed(alive_compose)
+                self._gl_check("alive compose")
+                self.lum_tex = self.tex_lum_hi
+                return
+            except Exception as e:                  # noqa: BLE001 — §6.4
+                # the alive picture is gone: the stock compose into
+                # tex_lum_hi, this same frame (the fields are already drawn,
+                # so only the compose runs again)
+                self._alive_fail(e)
+        self._compose(self._pf["compose"], self._pf["vao_compose"], self.fbo_lum_hi,
+                      fa, rw, rh)
+        self.lum_tex = self.tex_lum_hi
+
+    def _compose(self, pc, vao, out_fbo, fa, rw, rh, extra=None):
+        """compose.frag (the stock program or the alive copy) into out_fbo.
+        The caller holds the context."""
+        gl, F = self._gl, FRACTAL
         pc["u_outSize"].value = (float(rw), float(rh))
         pc["u_grid"].value = (self.gw, self.gh)
         pc["u_mix"].value = min(1.0, fa / FRACTAL_MIX_FULL)
@@ -889,12 +1155,13 @@ class PhysarumFieldGL:
         pc["u_bloomThr"].value = F["bloomThr"]
         pc["u_shimmer"].value = (F["shimmer"][0] * fa, F["shimmer"][1] * float(self.px_scale),
                                  float(self.bloom_t))
-        self.fbo_lum_hi.use()
+        out_fbo.use()
         self.tex_fields[0].use(0)
         self.tex_lum.use(1)       # the stock picture (read when u_mix < 1)
         self.tex_fields[1].use(3)
-        self._pf["vao_compose"].render(gl.TRIANGLES, vertices=3)
-        self.lum_tex = self.tex_lum_hi
+        if extra is not None:
+            extra(pc)
+        vao.render(gl.TRIANGLES, vertices=3)
 
     def _lum_hi_target(self):
         """The output-size R8 target of the compose pass, (re)allocated when
@@ -1016,5 +1283,6 @@ class PhysarumFieldGL:
     def release(self):
         """Release the context; idempotent (the mode's stop() contract)."""
         ctx, self.ctx = self.ctx, None
+        self._alive = None        # its objects die with the context
         if ctx is not None:
             ctx.release()

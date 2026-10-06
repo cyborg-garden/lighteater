@@ -1,0 +1,167 @@
+{
+ "alive": {
+  "freshHalfLife": 0.5,
+  "skirtHalfLife": 0.8,
+  "freshIn": 7,
+  "freshFood": [
+   0.4,
+   2.4,
+   3.4
+  ],
+  "freshTurn": [
+   0.04,
+   0.22,
+   0.28
+  ],
+  "freshGain": 14,
+  "freshLand": 1.0,
+  "freshPull": 0.003,
+  "fluxHalfLife": 0.25,
+  "prune": [
+   0.3,
+   1.6,
+   2.2
+  ],
+  "pruneAt": [
+   0.004,
+   0.02
+  ],
+  "onOff": [
+   1.0,
+   0.7
+  ],
+  "cell": 16,
+  "cool": 4,
+  "young": 1.5,
+  "settled": 4,
+  "reach": 7,
+  "minAge": 0.3,
+  "glowStep": [
+   0.985,
+   0.9
+  ],
+  "glowFade": 0.8,
+  "glowRefr": 1.2,
+  "glowK": 1.0,
+  "glowCalm": 0.12,
+  "frontAge": 1.4,
+  "front": [
+   0.12,
+   0.55
+  ],
+  "pulsePeriod": 32,
+  "pulseAmp": 0.2,
+  "pulseSwell": 0.35,
+  "pulseWave": 0.09,
+  "pulseFar": 400,
+  "pulseSrcQ": 0.97,
+  "pulseSrcFallback": 0.75,
+  "pulseCreep": 0.2,
+  "pulseOffCost": 4,
+  "pulseSound": 0.8,
+  "headsTarget": 12000,
+  "headLook": 3,
+  "headTail": 7,
+  "headPx": 2.5,
+  "headK": 0.4,
+  "contour": [
+   0.1,
+   0.06,
+   0.03
+  ],
+  "contourGain": 30,
+  "slope": 0.8,
+  "domeR": 22,
+  "domeW": [
+   0.35,
+   0.9
+  ],
+  "depthEase": 0.06,
+  "carve": [
+   0.35,
+   0.5,
+   1.8,
+   3.0
+  ],
+  "body": [
+   0.45,
+   0.3,
+   0.65,
+   0.45
+  ],
+  "contact": [
+   1.25,
+   2.5
+  ],
+  "fine": [
+   2.2,
+   1.2
+  ],
+  "bump": [
+   7,
+   30
+  ],
+  "ink": 1,
+  "inkThr": [
+   0.5,
+   1.0,
+   9.0
+  ],
+  "press": [
+   0.35,
+   50,
+   3
+  ],
+  "dry": [
+   0.2,
+   2.6,
+   18,
+   1.3
+  ],
+  "sheen": [
+   2.6,
+   2.0,
+   1.4,
+   180
+  ],
+  "ground": [
+   0.9,
+   2.0,
+   0.3,
+   0.5
+  ],
+  "edge": [
+   0.4,
+   2600
+  ],
+  "nib": [
+   0.45,
+   2.1,
+   0.6,
+   0
+  ],
+  "thorn": [
+   1.8,
+   0.75,
+   3.5,
+   0.3
+  ],
+  "tierBump": [
+   0.8,
+   0.5
+  ],
+  "inkBody": [
+   1.5,
+   0.7
+  ],
+  "chrome": [
+   0.08,
+   0.3,
+   0.6
+  ],
+  "thornRim": 0.9,
+  "landing": {
+   "palette": "violet"
+  }
+ }
+}
