@@ -49,7 +49,9 @@ rerun with nothing changed is a no-op.
 - `bender_looks.json`: the card (`title`, `key`, `blurb`, `accent` as RGB),
   `effects` in E's order with `effect_titles`, `jpeg_effects`,
   `sensor_effects`, `looks` (one per effect) with `look_names` and
-  `safe_look`, `ladders`, `sort_band`, `settle_s`, `cut` (the cut clock and
+  `safe_look`, `ladders`, `sort_band`, `settle_s` and `settle_stretch` (the
+  settle counts bends, but never stretches past that many times its own
+  time constant), `cut` (the cut clock and
   `touch_cuts`), `working` (the pixel budget), `governor` (`max_step_ms` is
   the desktop's main-thread cost ceiling; the page may ignore it), `backoff`,
   `sound`, `jpeg` (encode quality 0..1 and the copy block), `bent_mix`,
@@ -66,7 +68,8 @@ rerun with nothing changed is a no-op.
 - `bender_goldens.json`: sha256 of every JPEG bend at three amounts and two
   seeds on each fixture (plus the byte smear), the MCU walk of each fixture,
   every sensor bend on a rule-defined pixel fixture at two sizes, the pixel
-  sort, and the seeded generator's first values. The bends' arithmetic is
+  sort, `settle` (settle_alpha on fixed inputs, floats), and the seeded
+  generator's first values. The bends' arithmetic is
   written to match JavaScript's (`Math.round` is half up, `Math.imul`, Uint8
   truncation), so the page's `jpeg.js`, `sensor.js` and `sort.js` reproduce
   every hash.

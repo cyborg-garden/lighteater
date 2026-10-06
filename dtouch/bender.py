@@ -104,22 +104,29 @@ def stack_tau(effect, long):
     return max(long / 2 if long > 0 else 0, SETTLE_S.get(effect, 0))
 
 
-def settle_alpha(effect, long, dt, new_bends, max_hz):
-    """The running mean's weight for this display frame. A long exposure is
-    wall time (`dt` seconds of it). A settle is a count of bends: each new
+# A settle counted in bends stretches in wall time on a slow machine; it
+# never stretches past SETTLE_STRETCH times its own time constant.
+SETTLE_STRETCH = 2
+
+
+def settle_alpha(effect, long, dt, new_bends, max_hz, camera=False):
+    """The running mean's weight for this display frame; 0.0 is no running
+    mean at all. A long exposure is wall time (`dt` seconds of it), and so
+    is a settle over the unbent camera (`camera`: nothing bent to count yet,
+    or bending gave up). Otherwise a settle is a count of bends: each new
     bend weighs 1 - exp(-1 / (tau x max_hz)), so it averages the same number
     of bends whether this machine bends at 30 a second or 8 (per second, a
     loaded machine's few bends each weighed far more, and the settle stopped
-    hiding the strobe). None: a settle with no new bend holds the stack.
-    0.0: no running mean at all."""
+    hiding the strobe), but never less than wall time at SETTLE_STRETCH x
+    tau, so at a very low bend rate the picture still catches up."""
     tau = stack_tau(effect, long)
     if tau <= 0:
         return 0.0
-    if long > 0 and long / 2 >= SETTLE_S.get(effect, 0):
-        return 1 - math.exp(-max(dt, 0.0) / tau)
-    if new_bends <= 0:
-        return None
-    return 1 - math.exp(-new_bends / (tau * max_hz))
+    dt = max(dt, 0.0)
+    if camera or (long > 0 and long / 2 >= SETTLE_S.get(effect, 0)):
+        return 1 - math.exp(-dt / tau)
+    per_bend = 1 - math.exp(-max(new_bends, 0) / (tau * max_hz))
+    return max(per_bend, 1 - math.exp(-dt / (SETTLE_STRETCH * tau)))
 
 
 # ----- the working size -----

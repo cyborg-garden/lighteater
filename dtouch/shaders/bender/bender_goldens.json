@@ -2686,5 +2686,151 @@
    "runs": 480,
    "sha256": "f741bbaa4e491285854dc9597f692faaa34e0f36d6d59717bd2244b15d7a6797"
   }
+ ],
+ "settle": [
+  {
+   "effect": "remap",
+   "long": 0,
+   "dt": 0.016666666666666666,
+   "new_bends": 1,
+   "max_hz": 30,
+   "camera": false,
+   "alpha": 0.09084355712328696
+  },
+  {
+   "effect": "remap",
+   "long": 0,
+   "dt": 0.016666666666666666,
+   "new_bends": 1,
+   "max_hz": 30,
+   "camera": true,
+   "alpha": 0.04650304516652326
+  },
+  {
+   "effect": "remap",
+   "long": 0,
+   "dt": 0.0625,
+   "new_bends": 1,
+   "max_hz": 30,
+   "camera": false,
+   "alpha": 0.09084355712328696
+  },
+  {
+   "effect": "remap",
+   "long": 0,
+   "dt": 0.0625,
+   "new_bends": 1,
+   "max_hz": 30,
+   "camera": true,
+   "alpha": 0.16353569270701673
+  },
+  {
+   "effect": "remap",
+   "long": 0,
+   "dt": 0.5,
+   "new_bends": 1,
+   "max_hz": 30,
+   "camera": false,
+   "alpha": 0.5104583404430469
+  },
+  {
+   "effect": "remap",
+   "long": 0,
+   "dt": 0.5,
+   "new_bends": 1,
+   "max_hz": 30,
+   "camera": true,
+   "alpha": 0.7603489635582242
+  },
+  {
+   "effect": "remap",
+   "long": 0,
+   "dt": 0.05,
+   "new_bends": 0,
+   "max_hz": 30,
+   "camera": false,
+   "alpha": 0.06893722029597726
+  },
+  {
+   "effect": "remap",
+   "long": 0,
+   "dt": 0.05,
+   "new_bends": 0,
+   "max_hz": 30,
+   "camera": true,
+   "alpha": 0.1331221002498184
+  },
+  {
+   "effect": "swap",
+   "long": 0,
+   "dt": 0.01,
+   "new_bends": 2,
+   "max_hz": 30,
+   "camera": false,
+   "alpha": 0.5654017914929218
+  },
+  {
+   "effect": "swap",
+   "long": 0,
+   "dt": 0.01,
+   "new_bends": 2,
+   "max_hz": 30,
+   "camera": true,
+   "alpha": 0.11750309741540454
+  },
+  {
+   "effect": "stack",
+   "long": 0,
+   "dt": 0.03,
+   "new_bends": 3,
+   "max_hz": 30,
+   "camera": false,
+   "alpha": 0.5654017914929218
+  },
+  {
+   "effect": "stack",
+   "long": 0,
+   "dt": 0.03,
+   "new_bends": 3,
+   "max_hz": 30,
+   "camera": true,
+   "alpha": 0.22119921692859512
+  },
+  {
+   "effect": "remap",
+   "long": 3,
+   "dt": 0.1,
+   "new_bends": 5,
+   "max_hz": 30,
+   "camera": false,
+   "alpha": 0.06449301496838222
+  },
+  {
+   "effect": "remap",
+   "long": 3,
+   "dt": 0.1,
+   "new_bends": 5,
+   "max_hz": 30,
+   "camera": true,
+   "alpha": 0.06449301496838222
+  },
+  {
+   "effect": "bent",
+   "long": 0,
+   "dt": 0.1,
+   "new_bends": 1,
+   "max_hz": 30,
+   "camera": false,
+   "alpha": 0.0
+  },
+  {
+   "effect": "bent",
+   "long": 0,
+   "dt": 0.1,
+   "new_bends": 1,
+   "max_hz": 30,
+   "camera": true,
+   "alpha": 0.0
+  }
  ]
 }

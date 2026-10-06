@@ -596,7 +596,8 @@ class BenderMode:
             self.size = (w, h)
             self.bent = None                  # never the last bend, frozen
         pic = self.bent
-        if pic is None or pic.shape[:2] != (self.size[1], self.size[0]):
+        camera = pic is None or pic.shape[:2] != (self.size[1], self.size[0])
+        if camera:
             # nothing bent at this size yet: the camera, unbent, not black
             w, h = self.size if self.size[0] else self._working_size(frame_bgr)
             pic = cv2.cvtColor(cv2.resize(cover_crop(frame_bgr, w / h), (w, h),
@@ -605,14 +606,13 @@ class BenderMode:
         pic = post(pic, self.split(), self.copy(),
                    seed=(self.cut.seed % 9973) + 0.5, block=B.BLOCK)
         alpha = B.settle_alpha(self.effect(), self.long(), dt,
-                               self.bends - self.folded_bends, MAX_BEND_HZ)
+                               self.bends - self.folded_bends, MAX_BEND_HZ, camera)
         self.folded_bends = self.bends
         if alpha != 0.0:
             if self.stack is None or self.stack.shape != pic.shape:
                 self.stack = None
                 alpha = 1.0
-            if alpha is not None:             # None: no new bend, hold
-                self.stack = fold(self.stack, pic, alpha)
+            self.stack = fold(self.stack, pic, alpha)
             pic = show(self.stack)
         else:
             self.stack = None
