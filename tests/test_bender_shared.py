@@ -206,7 +206,7 @@ def test_goldens_are_distinct_and_cover_every_bend(goldens):
     sens = [c["sha256"] for c in goldens["sensor"]]
     assert len(set(sens)) == len(sens)
     assert {c["effect"] for c in goldens["sensor"]} == set(SENSOR_EFFECTS)
-    assert set(SENSOR_EFFECTS) == {"bent", "thermal", "streak", "hclock", "vclock", "adc"}
+    assert set(SENSOR_EFFECTS) == {"bent", "thermal", "hclock", "vclock", "adc"}
     assert all(c["runs"] > 0 for c in goldens["sort"])
     first = goldens["rng32"]["first"]
     assert len(set(first)) == len(first) and all(0 <= v < 1 for v in first)

@@ -26,16 +26,11 @@ BENT CAM, the landing look, is the three things every bent-camera account
 shows at once: a pink or green cast, slipped bands, posterised bursts that
 keep the outlines. Never 8x8 squares: those are a file's, not a sensor's.
 
-Two more whole looks follow it, each one fault taken all the way, tuned by
-eye against bent-camera footage:
-  THERMAL      wrapped data bits: the brightness runs through a repeating
-               palette, so gradients come back as many thin rainbow rings
-               round every light, shadows near-black, grain boiling, edges
-               rimmed
-  LINE STREAK  a sticking line readout: single rows drag a sample right as
-               thin threads, bands repeat lower down, all hard cuts, in a
-               magenta cast
-Both work on RGB, after the demosaic.
+THERMAL follows it, one fault taken all the way, tuned by eye against
+bent-camera footage: wrapped data bits, so the brightness runs through a
+repeating palette and gradients come back as many thin rainbow rings round
+every light, shadows near-black, grain boiling, edges rimmed. It works on
+RGB, after the demosaic.
 
 Everything moves with `t` (seconds) through slow value noise: the fault
 drifts like a finger on a circuit board. The seed picks which fault.
@@ -58,12 +53,12 @@ import math
 
 import numpy as np
 
-SENSOR_EFFECTS = ("bent", "thermal", "streak", "hclock", "vclock", "adc")
-SENSOR_TITLES = {"bent": "bent cam", "thermal": "thermal", "streak": "line streak",
-                 "hclock": "h clock", "vclock": "v clock", "adc": "adc bits"}
-# The first three are whole looks, iconic on their own; the rest are single
+SENSOR_EFFECTS = ("bent", "thermal", "hclock", "vclock", "adc")
+SENSOR_TITLES = {"bent": "bent cam", "thermal": "thermal", "hclock": "h clock",
+                 "vclock": "v clock", "adc": "adc bits"}
+# The first two are whole looks, iconic on their own; the rest are single
 # faults.
-ICONIC = 3
+ICONIC = 2
 
 # BENT CAM's three faults, weighed
 BENT_MIX = {"cast": 1.0, "slip": 0.7, "adc": 0.45}
@@ -90,19 +85,6 @@ THERMAL_PALETTES = (
     # night: red and green
     ((240, 40, 40), (90, 10, 20), (40, 220, 60), (10, 80, 20), (255, 140, 30), (190, 240, 40)),
 )
-
-# LINE STREAK: the magenta cast at amount 1 (green scaled down this far),
-# the hard cuts a second, the streak bands as a fraction of the height
-# (BAND[0] + BAND[1] x a hash), a band's odds (P_BAND[0] + P_BAND[1] x
-# amount) and a row's inside it, the luma a sample must beat the hold by to
-# take it over, and the odds of a repeated band and how far down it lands.
-STREAK_CAST = 0.5
-STREAK_HZ = 6
-STREAK_BAND = (0.06, 0.2)
-STREAK_P_BAND = (0.4, 0.5)
-STREAK_P_ROW = (0.5, 0.45)
-STREAK_GRAB = 16
-STREAK_REPEAT = (0.3, 0.5)
 
 _M32 = 0xFFFFFFFF
 
@@ -407,54 +389,9 @@ def thermal(px, amount, seed, t):
     return out.astype(np.uint8)
 
 
-def line_streak(px, amount, seed, t):
-    """LINE STREAK, on RGB: the line readout sticks. In bands of rows, single
-    rows (1 to 3 px threads) hold a sample from a random point and drag it
-    right to the edge of the frame; a brighter sample takes the hold over,
-    so bright edges streak furthest. Sometimes a whole band of rows is read
-    again a third of the frame lower. Everything is a hard cut, STREAK_HZ
-    times a second, in a magenta cast."""
-    h, w = px.shape[:2]
-    a = _clamp(amount, 0, 1)
-    src = px[..., :3].astype(np.int64)
-    k = _jround(256 * STREAK_CAST * a)
-    src[..., 1] = (src[..., 1] * (256 - k)) >> 8
-    out = src.copy()
-    frame = math.floor(t * STREAK_HZ)
-    # a repeated band
-    if hash01(frame, seed, 90) < STREAK_REPEAT[0] + STREAK_REPEAT[1] * a:
-        bh = max(2, _jround(h * (0.05 + 0.12 * hash01(frame, seed, 91))))
-        y0 = math.floor(hash01(frame, seed, 92) * (h - bh))
-        rows = np.arange(y0, y0 + bh)
-        out[rows] = src[(rows - _jround(h / 3)) % h]
-    base = out.copy()
-    band_h = max(4, _jround(h * (STREAK_BAND[0] + STREAK_BAND[1] * hash01(seed, 93))))
-    p_band = STREAK_P_BAND[0] + STREAK_P_BAND[1] * a
-    p_row = STREAK_P_ROW[0] + STREAK_P_ROW[1] * a
-    live, x0 = [], []
-    for y in range(h):
-        if (hash01(y // band_h, frame, seed ^ 0x51) < p_band
-                and hash01(y, frame, seed ^ 0x52) < p_row):
-            live.append(y)
-            x0.append(math.floor(hash01(y, frame, seed ^ 0x53) * w * 0.7))
-    if live:
-        rows = np.array(live)
-        starts = np.array(x0)
-        ly = luma(base[rows])
-        held = base[rows, starts].copy()
-        hl = ly[np.arange(len(rows)), starts]
-        for x in range(int(starts.min()) + 1, w):
-            on = x > starts
-            take = on & (ly[:, x] > hl + STREAK_GRAB)
-            held[take] = base[rows[take], x]
-            hl = np.where(take, ly[:, x], hl)
-            out[rows[on], x] = held[on]
-    return out.astype(np.uint8)
-
-
-# THERMAL and LINE STREAK work on RGB, after the camera's demosaic: what the
-# processor hands on, not what the sensor read.
-RGB_BENDS = {"thermal": thermal, "streak": line_streak}
+# THERMAL works on RGB, after the camera's demosaic: what the processor hands
+# on, not what the sensor read.
+RGB_BENDS = {"thermal": thermal}
 
 
 def bent_cam(raw, amount, seed, t, mix=None):

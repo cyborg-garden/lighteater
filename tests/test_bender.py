@@ -263,39 +263,10 @@ def test_thermal_rims_a_hard_edge():
     assert rim > inside + 60
 
 
-def test_line_streak_drags_thin_threads_right_in_a_purple_cast():
-    px = np.full((96, 128, 3), 30, np.uint8)
-    px[:, 40:44] = 230                    # a bright post
-    out = S.sensor_bend(px, "streak", 0.8, 9, 2.0).astype(int)
-    after = out[:, 50:120].mean(axis=(1, 2))
-    lit = after > 120                     # rows streaked from the post
-    assert lit.sum() >= 6
-    # threads, not slabs: lit rows come in short runs
-    runs, n = [], 0
-    for v in lit:
-        if v:
-            n += 1
-        elif n:
-            runs.append(n)
-            n = 0
-    if n:
-        runs.append(n)
-    assert np.median(runs) <= 3
-    assert out[..., 1].mean() < (out[..., 0].mean() + out[..., 2].mean()) / 2
-
-
-def test_line_streak_cuts_hard_between_frames():
-    px = np.tile(np.linspace(0, 255, 96).astype(np.uint8)[None, :, None], (64, 1, 3))
-    a = S.sensor_bend(px, "streak", 0.8, 4, 1.00)
-    b = S.sensor_bend(px, "streak", 0.8, 4, 1.01)     # same cut
-    c = S.sensor_bend(px, "streak", 0.8, 4, 1.40)     # the next cuts
-    assert np.array_equal(a, b)
-    assert not np.array_equal(a, c)
-
-
 def test_the_iconic_bends_come_first():
-    assert B.EFFECTS[:3] == ("bent", "thermal", "streak")
-    assert B.LOOK_NAMES[:3] == ("bent", "thermal", "streak")
+    assert B.EFFECTS[:2] == ("bent", "thermal")
+    assert B.LOOK_NAMES[:2] == ("bent", "thermal")
+    assert "streak" not in B.EFFECTS
 
 
 # ---------- sort and post ----------

@@ -11,8 +11,8 @@ code, never retyped.
 - `bender_looks.json` (bundled by the page): the mode's card metadata, the
   effects in E's order and their titles, the looks, the ladders, the settle
   and cut-clock constants, the working-size budget and its governor, the
-  back-off, sound and autopilot sway, BENT CAM's mix, THERMAL's and LINE
-  STREAK's constants, STACK's weights, and
+  back-off, sound and autopilot sway, BENT CAM's mix, THERMAL's constants,
+  STACK's weights, and
   the bend loop's rate limits.
 - `bender_goldens.json` (imported only by the site's tests): the bends'
   outputs, as sha256 of the bytes or pixels, on the unit's three fixture
@@ -116,9 +116,6 @@ def looks_payload():
                     "grain": S.THERMAL_GRAIN, "noise_hz": S.THERMAL_NOISE_HZ,
                     "edge": list(S.THERMAL_EDGE), "blur": S.THERMAL_BLUR,
                     "palettes": [[list(c) for c in p] for p in S.THERMAL_PALETTES]},
-        "streak": {"cast": S.STREAK_CAST, "hz": S.STREAK_HZ, "band": list(S.STREAK_BAND),
-                   "p_band": list(S.STREAK_P_BAND), "p_row": list(S.STREAK_P_ROW),
-                   "grab": S.STREAK_GRAB, "repeat": list(S.STREAK_REPEAT)},
         "stack_weights": [[name, w] for name, w in STACK_WEIGHTS],
         "loop": {"max_bend_hz": mode.MAX_BEND_HZ, "stall_s": mode.STALL_S,
                  "respawn_gap_s": mode.RESPAWN_GAP_S,
