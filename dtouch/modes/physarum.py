@@ -1339,6 +1339,8 @@ class PhysarumMode:
                                       target=glout.fbo_src) is None:
                     self._ink_none = True
                     return None
+                # the ink drew: a rack failure from here must not draw it again
+                self._ink_none = True
                 glout.rack.run(cb, cb.plan(rh, rw), glout.tex_src)
                 out = glout.rack.read()
             self.signal_done = True
