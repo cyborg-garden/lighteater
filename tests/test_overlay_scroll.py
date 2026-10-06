@@ -170,9 +170,13 @@ def test_drag_on_empty_panel_scrolls():
 
 def test_collapse_button_wins_over_scrolled_row_under_it():
     """DATA-LOSS guard: the collapse button is fixed chrome floating above
-    scrolled content. When a user preset's row (and its hover delete button)
-    scrolls underneath it, a click must toggle the collapse — never arm the
-    delete (two such clicks would silently destroy a saved look)."""
+    scrolled content. When a user preset's row (and its hover manage
+    buttons, which front-insert their hits) scrolls underneath it, a click
+    must toggle the collapse and fire nothing else: two clicks on an armed
+    delete would silently destroy a saved look. Since the close button
+    became the 2.75u panel handle (imgui.panel_handle), the row's delete
+    sits just right of it at 720p and its rename button sits under it, so
+    whichever manage button overlaps is the one this stages."""
     ui = OverlayUI(1280, 720, PRESETS + ["mine"], list(PALETTES), MATTES)
     ui.user_presets = {"mine"}
     frame = np.zeros((720, 1280, 3), np.uint8)
@@ -180,22 +184,30 @@ def test_collapse_button_wins_over_scrolled_row_under_it():
     collapse = next(r for r, k, _ in ui._hot if k == "collapse")
     row = next(r for r, k, p in ui._hot
                if k == "preset" and p == ui.presets.index("mine"))
-    # scroll the panel so the 'mine' row slides under the collapse button
-    ui.scroll = row[1] - collapse[1] + 4
-    ui.mouse = ((collapse[0] + collapse[2]) // 2,
-                (collapse[1] + collapse[3]) // 2)
+    # scroll the panel so the 'mine' row slides under the collapse button's
+    # centre (the button is the 2.75u panel handle, taller than a row)
+    cy = (collapse[1] + collapse[3]) // 2
+    ui.scroll = row[1] - (cy - (row[3] - row[1]) // 2)
+    ui.mouse = ((collapse[0] + collapse[2]) // 2, cy)
     ui.draw(frame, {"status": ""})       # hover draw reveals manage buttons
-    del_rect = next(r for r, k, p in ui._hot if k == "del" and p == "mine")
-    ix0, iy0 = max(del_rect[0], collapse[0]), max(del_rect[1], collapse[1])
-    ix1, iy1 = min(del_rect[2], collapse[2]), min(del_rect[3], collapse[3])
-    assert ix1 > ix0 and iy1 > iy0, "precondition: delete overlaps collapse"
-    cx, cy = (ix0 + ix1) // 2, (iy0 + iy1) // 2
+    hits = []
+    for r, k, p in ui._hot:
+        if k not in ("del", "ren") or p != "mine":
+            continue
+        ix0, iy0 = max(r[0], collapse[0]), max(r[1], collapse[1])
+        ix1, iy1 = min(r[2], collapse[2]), min(r[3], collapse[3])
+        if ix1 > ix0 and iy1 > iy0:
+            hits.append(((ix0 + ix1) // 2, (iy0 + iy1) // 2))
+    assert hits, "precondition: a manage button overlaps collapse"
+    cx, cy = hits[0]
     ui.mouse = (cx, cy)
     ui.draw(frame, {"status": ""})
     ui.on_mouse(cv2.EVENT_LBUTTONDOWN, cx, cy, 0)
     assert ui.open is False              # the collapse click landed
     assert ui._del_armed is None         # the delete never armed
     assert ui.pending_delete is None
+    assert ui.renaming is None
+    assert ui.pending_preset is None
 
 
 def test_slider_drag_still_works_with_scrolling():

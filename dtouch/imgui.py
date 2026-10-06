@@ -18,8 +18,12 @@ render exactly as authored and 4K renders at 2x (issue #3).
 """
 from __future__ import annotations
 
+import math
+
 import cv2
 import numpy as np
+
+from .hud import TITLE_SAFE, u
 
 # BGR chrome — shared by the panel and every future toolkit surface.
 PANEL = (34, 32, 30)
@@ -155,6 +159,119 @@ def arm_delete(armed, name):
     if armed == name:
         return None, name
     return name, None
+
+
+# ----- the panel handle (the one way back to the sidebar) -----
+#
+# Owner report: "on the local version sometimes the button to expand out the
+# side menu was not noticeable." Measured on the old 36x30 px PANEL box with a
+# 1 px TRACK border: 1.28:1 against a black frame and 1.03:1 against physarum
+# veins at 720p — the box itself was invisible on the dark pictures this
+# instrument mostly makes, leaving a small grey glyph. It was also 1.5u x
+# 1.25u against §5's 2.75u hit target, sat outside title-safe, and the
+# blackout corner tick (hud.draw_corner_tick, drawn after it) covered its
+# top-right corner. The HUD chevron and the collapsed sidebar also drew two
+# different glyphs for the same "open the panel" action.
+#
+# The fix is one handle, drawn by this one function for both callers:
+#   - 2.75u square (§5 hit target), top-right corner on the 3.5% title-safe
+#     inset (§5 layout discipline). The blackout tick's legs are 2u, and its
+#     hypotenuse at the handle's right edge reaches y = 2u - TITLE_SAFE*w,
+#     below the handle's top (TITLE_SAFE*h) for any frame wider than ~0.27x
+#     its height, so the two never share a pixel — pinned by a pixel test
+#     rather than asserted here.
+#   - a two-tone outline, the same idea as §5's double-drawn text: a black
+#     outer ring and an INK inner ring. Whatever the ground, one of the two is
+#     far from it — black carries white/grey grounds, INK carries black ones —
+#     so the edge clears WCAG 1.4.11's 3:1 non-text contrast without knowing
+#     the picture. The worst ground is the one equally far from both rings:
+#     INK-on-black is 15.41:1 (§5), so that ground sees sqrt(15.41) = 3.93:1
+#     from each. Measured on rendered pixels at 1080p (2026-09-24): black
+#     15.41, white 21.0, mid-grey 5.32, 1-bit noise 15.41, and 3.95 on
+#     synthetic blurred physarum veins, whose soft vein edges sit near that
+#     worst ground; the old box scored 1.44 on black by the same instrument.
+#     tests/test_panel_handle.py pins >= 3:1 on the flat and noise grounds.
+#   - the plate inside is the panel's own 86% PANEL scrim (§5), and the glyph
+#     is INK in both states (the old HUD chevron used DIM). Hovered, the
+#     plate is HANDLE_HOVER, not the widgets' HOVER: HOVER at 86% over a
+#     white ground left the INK glyph at 3.80:1 (review 2026-09-24, below
+#     the 4.5:1 text bar). HANDLE_HOVER is HOVER blended halfway to PANEL,
+#     still visibly lighter than the resting plate; the hover cases of
+#     tests/test_panel_handle.py measure it on every ground.
+#   - no fade. A handle that fades is the "sometimes not noticeable" bug again.
+#   - the open panel's close button is this same handle with ">" (the panel
+#     slides back out to the right), on the same rect. Review 2026-09-24: when
+#     the close button kept its old (w-40, 12) box, a second click on the
+#     handle landed on whatever panel row sat under it (the TEMPLATES
+#     section at 720p, preset 0 at 1080p and 4K) and loaded or folded it.
+#     On one rect the second click closes the panel again, as before.
+# Whether it draws at all is the caller's decision: the shell does not draw it
+# in HIDDEN (the clean-output contract).
+
+HANDLE_U = 2.75          # side, in u — DESIGN.md §5 hit-target floor
+HANDLE_SCRIM = 0.86      # == the panel scrim (DESIGN.md §5)
+HANDLE_HOVER = tuple((a + b) // 2 for a, b in zip(HOVER, PANEL))
+
+
+def panel_handle_rect(w, h):
+    """(x0, y0, x1, y1) of the panel handle for a `w`x`h` frame."""
+    uu = u(h)
+    side = int(math.ceil(HANDLE_U * uu))
+    x1 = w - int(w * TITLE_SAFE)
+    y0 = int(h * TITLE_SAFE)
+    return (x1 - side, y0, x1, y0 + side)
+
+
+def _rounded(img, x0, y0, x1, y1, r, color):
+    """Filled rounded rectangle (inclusive corners), anti-aliased corners."""
+    r = max(0, min(r, (x1 - x0) // 2, (y1 - y0) // 2))
+    cv2.rectangle(img, (x0 + r, y0), (x1 - r, y1), color, -1)
+    cv2.rectangle(img, (x0, y0 + r), (x1, y1 - r), color, -1)
+    if r:
+        for cx, cy in ((x0 + r, y0 + r), (x1 - r, y0 + r),
+                       (x0 + r, y1 - r), (x1 - r, y1 - r)):
+            cv2.circle(img, (cx, cy), r, color, -1, cv2.LINE_AA)
+
+
+def panel_handle(img, hover=False, glyph="<"):
+    """Draw the panel handle on `img` in place; return its hit rect. `glyph`
+    is "<" to open the panel, ">" to close it."""
+    h, w = img.shape[:2]
+    rect = panel_handle_rect(w, h)
+    x0, y0, x1, y1 = rect
+    uu = u(h)
+    dark = max(2, int(round(0.12 * uu)))     # outer black ring
+    light = max(2, int(round(0.08 * uu)))    # inner INK ring
+    rad = max(3, int(round(0.5 * uu)))
+    roi = img[y0:y1 + 1, x0:x1 + 1]
+    rh, rw = roi.shape[:2]
+    if rh == 0 or rw == 0:
+        return rect
+    # scrim against the picture itself, computed before the rings paint over it
+    plate = np.empty_like(roi)
+    plate[:] = HANDLE_HOVER if hover else PANEL
+    scrim = cv2.addWeighted(plate, HANDLE_SCRIM, roi, 1.0 - HANDLE_SCRIM, 0)
+    _rounded(roi, 0, 0, rw - 1, rh - 1, rad, (0, 0, 0))
+    _rounded(roi, dark, dark, rw - 1 - dark, rh - 1 - dark,
+             rad - dark, INK)
+    inset = dark + light
+    mask = np.zeros((rh, rw), np.uint8)
+    _rounded(mask, inset, inset, rw - 1 - inset, rh - 1 - inset,
+             rad - inset, 255)
+    a = (mask.astype(np.float32) / 255.0)[..., None]
+    roi[:] = (scrim * a + roi * (1.0 - a) + 0.5).astype(np.uint8)
+    # "<": the panel slides in from the right (">" mirrors it: back out).
+    # Drawn as strokes, not Hershey text, so it centres exactly and scales
+    # with u.
+    cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+    arm = int(round(0.45 * uu))
+    t = max(2, int(round(0.16 * uu)))
+    sgn = 1 if glyph == "<" else -1
+    tip = (cx - sgn * (arm // 2), cy)
+    cv2.polylines(img, [np.array([(cx + sgn * (arm // 2), cy - arm), tip,
+                                  (cx + sgn * (arm // 2), cy + arm)], np.int32)],
+                  False, INK, t, cv2.LINE_AA)
+    return rect
 
 
 class Gui:

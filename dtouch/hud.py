@@ -399,7 +399,13 @@ class Hud:
         self.debug = False     # 'i' — status line variant: fps / frame-time / res
 
     def draw(self, img, state, status="", debug_status="", recording=False,
-             blackout=False, camera_lost=False, camera_black=False):
+             blackout=False, camera_lost=False, camera_black=False,
+             status_max_x=None):
+        """`status_max_x`: the x the status line (and its record dot) must
+        end before, or None for no limit. The shell passes the panel handle's
+        left edge minus a gap: on portrait frames the line is wider than the
+        room left of the handle (1080x1920: it ran from x=37 to 1250, across
+        the handle at 925..1043), and the HUD draws after the handle."""
         h, w = img.shape[:2]
         uu = u(h)
         if blackout:
@@ -415,10 +421,17 @@ class Hud:
         ix, iy = int(w * TITLE_SAFE), int(h * TITLE_SAFE)
         px = int(0.75 * uu)
         line = debug_status if self.debug else status
+        # shrink (fit_px), not crop, when a limit is given: the record dot
+        # needs 0.9u + its radius after the text, so that comes off first
+        lpx = px
+        if line and status_max_x is not None:
+            room = status_max_x - ix - (int(0.9 * uu) + max(2, int(0.3 * uu))
+                                        if recording else 0)
+            lpx = fit_px(line, px, room)
         if line:
-            put_outlined(img, line, (ix, iy + px), px, DIM)
+            put_outlined(img, line, (ix, iy + px), lpx, DIM)
         if recording:
-            tw = text_size(line, px)[0] if line else 0
+            tw = text_size(line, lpx)[0] if line else 0
             cv2.circle(img, (ix + tw + int(0.9 * uu), iy + px // 2 + 2),
                        max(2, int(0.3 * uu)), RED, -1, cv2.LINE_AA)
         if camera_lost or camera_black:
