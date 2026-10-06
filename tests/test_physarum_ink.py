@@ -300,8 +300,11 @@ def test_the_governor_steps_the_ink_then_the_step_down(tmp_path):
             m._govern(GOV_BUDGET_MS + 5, True)
         assert m._gov_level == 1 and "ink off" in host.hud.toasts._center.text
         frame = np.zeros((108, 192, 3), np.uint8)
-        m.step(frame, None, 1 / 60)
-        assert not m.pf.alive_error and m.pf.alive    # veins kept, ink not drawn
+        drawn = m.ink_frames
+        for _ in range(3):
+            m.step(frame, None, 1 / 60)
+        assert not m.pf.alive_error and m.pf.alive    # veins kept
+        assert m.ink_frames == drawn                  # ink not drawn
         for _ in range(GOV_SLOW_N):
             m._govern(GOV_BUDGET_MS + 5, True)
         assert m._gov_level == 2
@@ -324,10 +327,12 @@ def test_signal_over_the_ink_stays_on_the_gpu(tmp_path):
     try:
         host.ui.glitch = True
         frame = np.zeros((108, 192, 3), np.uint8)
-        out = None
+        out, drawn = None, m.ink_frames
         for _ in range(4):
             out = m.step(frame, None, 1 / 60)
         assert m.signal_done and m._rack_gl_ok
+        assert m.ink_frames == drawn + 4              # the ink path ran, each frame
+        assert m.pf._alive.blit_out is None           # no output-size copy kept
         assert out.shape == (108, 192, 3)
     finally:
         m.really_stop()
@@ -345,3 +350,66 @@ def test_unland_keeps_what_the_performer_changed(tmp_path):
         assert PALETTES_PH[ui.ph_palette_idx] == "toxic" and ui.ph_fractal == 0.0
     finally:
         m.really_stop()
+
+
+# ----- review round 2 ---------------------------------------------------------
+
+def test_alive_ms_is_the_steps_own_cost():
+    f = _field()
+    try:
+        f.fractal, f.out_size, f.alive = 1.0, (256, 144), True
+        _ink(f, frames=20)
+        assert 0.0 < f.alive_ms < 200.0
+        f.alive = False
+        matte, gray = _scene(f)
+        for _ in range(3):
+            f.update(matte, gray)
+        assert f.alive_ms == 0.0                      # off: costs nothing
+    finally:
+        f.release()
+
+
+def test_a_quality_change_resets_the_governor(tmp_path):
+    host, _ = _booted(tmp_path, frames=3)
+    m, ui = host.mode, host.ui
+    if m.engine != "gl":
+        pytest.skip("no GL context available (CI)")
+    try:
+        m._gov_level, m._gov_slow = 2, 7
+        ui.ph_quality_idx = (ui.ph_quality_idx + 1) % len(m.QUALITY_NAMES)
+        m.step(np.zeros((108, 192, 3), np.uint8), None, 1 / 60)
+        assert (m._gov_level, m._gov_slow) == (0, 0)
+    finally:
+        m.really_stop()
+
+
+def test_ink_and_rack_survive_a_foreign_context(tmp_path):
+    """A foreign moderngl context is current between frames (the app has
+    several). The ink + GPU rack path must leave it current and untouched:
+    a bare clear on it after each frame lands on IT (a nested `with
+    pf.ctx:` used to leave the field's context current instead, so the
+    foreign context's next calls went into the field's)."""
+    import moderngl
+    host, _ = _booted(tmp_path, frames=2)
+    m = host.mode
+    if m.engine != "gl":
+        pytest.skip("no GL context available (CI)")
+    host.ui.glitch = True
+    frame = np.full((108, 192, 3), 90, np.uint8)
+    ctx2 = moderngl.create_standalone_context()      # now the current one
+    try:
+        fbo = ctx2.framebuffer(color_attachments=[ctx2.texture((8, 8), 4)])
+        for i in range(10):
+            out = m.step(frame, None, 1 / 60)
+            v = (i % 5 + 1) / 5.0
+            fbo.use()                                # bare: whatever is current
+            ctx2.clear(v, 0.0, 0.0, 1.0)
+            with ctx2:
+                fbo.use()
+                px = np.frombuffer(fbo.read(components=4), np.uint8)[:4]
+            assert abs(int(px[0]) - round(v * 255)) <= 1 and px[1] == 0, (i, px)
+            assert out is not None and out.shape == (108, 192, 3)
+        assert m.ink_frames >= 8 and m.signal_done and m.pf.alive_error is None
+    finally:
+        m.really_stop()
+        ctx2.release()

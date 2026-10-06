@@ -239,10 +239,11 @@ def _palette_lut(name):
     return lut
 
 
-# the alive step's frame-time governor (PhysarumMode._govern): this mode's
-# own ms per frame over GOV_BUDGET_MS for GOV_SLOW_N frames in a row steps
-# down once (ink display off, then the alive step off)
-GOV_BUDGET_MS = 28.0
+# the alive step's frame-time governor (PhysarumMode._govern): the alive
+# step's own cost (PhysarumFieldGL.alive_ms: about 4-5 ms here at 720p-4K
+# with the ink capped) over GOV_BUDGET_MS for GOV_SLOW_N frames in a row
+# steps down once (ink display off, then the alive step off)
+GOV_BUDGET_MS = 12.0
 GOV_SLOW_N = 90
 
 _LUT_ROWS = {}
@@ -383,6 +384,8 @@ class PhysarumMode:
         self._ink_landed = None      # ((pal, fractal) before, (pal, fractal) set), until a look
         self._gov_level = 0          # 0 all on, 1 ink off, 2 alive off (_govern)
         self._gov_slow = 0
+        self._ink_none = False
+        self.ink_frames = 0          # frames drawn in the ink (diagnostics, tests)
         self._grid = tuple(grid) if grid is not None else None
         self._n = n
         self._quality = "perform"
@@ -828,14 +831,14 @@ class PhysarumMode:
 
     # ----- per-frame -----
     def step(self, frame_bgr, audio_levels, dt):
-        """One frame (_step), timed for the alive step's governor."""
-        import time
-        t0 = time.perf_counter()
+        """One frame (_step), then the alive step's governor on what that
+        step itself cost (the field's alive_ms: its GPU time plus its own
+        calls), so a slow matte or camera never blames the ink."""
         out = self._step(frame_bgr, audio_levels, dt)
         pf = self.pf
         alive_on = (self.engine == "gl" and pf is not None
                     and bool(getattr(pf, "_alive_was", False)))
-        self._govern((time.perf_counter() - t0) * 1000.0, alive_on)
+        self._govern(float(getattr(pf, "alive_ms", 0.0)), alive_on)
         return out
 
     def _step(self, frame_bgr, audio_levels, dt):
@@ -856,6 +859,8 @@ class PhysarumMode:
             self._quality = want_q
             self.pf.release()
             self.pf = self._build_field(self.host)
+            # a new tier is a new budget: the governor starts over on it
+            self._gov_level, self._gov_slow = 0, 0
             if self.engine == "gl":
                 g_w, g_h = self.grid
                 msg = f"quality {want_q}  {g_w}x{g_h} {_fmt_agents(self.n)}"
@@ -1299,10 +1304,15 @@ class PhysarumMode:
             # the feed through the palette, as bright as the mix slider says
             bg = "veil"
         if self._rack_gl_ok and self.host is not None and bool(self._ui("glitch", False)):
+            self._ink_none = False
             out = self._ink_gpu_rack(pf, rows, row, cam, bg, mix, rw, rh)
-            if out is not None:
+            if out is not None or self._ink_none:
+                # drawn, or the ink could not draw this frame: either way
+                # this frame's trail is already tonemapped, no second try
                 return out
         img = pf.ink_frame(rows, row, cam, bg, mix, out_size=(rw, rh))
+        if img is not None:
+            self.ink_frames += 1
         return img
 
     def _ink_gpu_rack(self, pf, rows, row, cam, bg, mix, rw, rh):
@@ -1318,13 +1328,21 @@ class PhysarumMode:
                 host.cb = cb
             sync_signal(cb, host.ui, self, rh)
             with pf.ctx:
+                # the rack's own allocation is checked on its own, so a rack
+                # failure is never taken for an alive one
+                pf._gl_drain()
                 glout = self._ensure_glout(rw, rh)
-                if pf.ink_frame(rows, row, cam, bg, mix, out_size=(rw, rh),
-                                target=glout.fbo_src) is None:
+                pf._gl_check("GPU rack")
+                # the caller holds the context: the bound variant (a nested
+                # `with pf.ctx:` would clobber moderngl's one restore slot)
+                if pf.ink_frame_bound(rows, row, cam, bg, mix, out_size=(rw, rh),
+                                      target=glout.fbo_src) is None:
+                    self._ink_none = True
                     return None
                 glout.rack.run(cb, cb.plan(rh, rw), glout.tex_src)
                 out = glout.rack.read()
             self.signal_done = True
+            self.ink_frames += 1
             return out
         except (KeyboardInterrupt, SystemExit):
             raise
@@ -1339,14 +1357,13 @@ class PhysarumMode:
 
     # ----- the alive step's frame-time governor -----
     def _govern(self, cost_ms, alive_on):
-        """The alive step costs the main thread real time (about +6 / +10 ms
-        at 720p / 1080p here, measured; more on a weaker GPU). Its own cost
-        signal is this mode's time inside step() (the camera wait is not in
-        it). After GOV_SLOW_N frames over GOV_BUDGET_MS in a row while the
-        step runs, it steps down once, toasted: first the ink display (the
-        alive picture is colourised like any fractal picture), then the
-        alive step itself. It never steps back up within the mode's run;
-        start() resets it."""
+        """The alive step costs real time (about 4-5 ms a frame here, more
+        on a weaker GPU). `cost_ms` is that step's own cost (the field's
+        alive_ms), not the whole frame. After GOV_SLOW_N frames over
+        GOV_BUDGET_MS in a row while the step runs, it steps down once,
+        toasted: first the ink display (the alive picture is colourised like
+        any fractal picture), then the alive step itself. It never steps
+        back up within a run; start() and a quality change reset it."""
         if not alive_on or self._gov_level >= 2:
             self._gov_slow = 0
             return

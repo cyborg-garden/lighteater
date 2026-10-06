@@ -621,14 +621,17 @@ class AliveGL:
             self._bind(p, 0, self.ink_out[0], self.s_lin, "u_src")
         self._draw("blit", fbo, setup)
 
-    def ink_read(self, w, h):
+    def ink_read(self, w, h, timed=None):
         """The ink at w x h as (h, w, 3) uint8 RGB, row 0 at the top: one
-        GPU blit, one RGB readback, no CPU flip or resize."""
+        GPU blit, one RGB readback, no CPU flip or resize. `timed` wraps the
+        blit (the field's alive clock); the readback stays outside it, since
+        it also waits on the rest of the frame."""
         if self.blit_out is None or self.blit_out[0].size != (w, h):
             self._free(self.blit_out)
             self.blit_out = None
             self.blit_out = self._target(w, h, comps=4, dtype="f1")
-        self.ink_blit(self.blit_out[1], w, h)
+        blit = lambda: self.ink_blit(self.blit_out[1], w, h)   # noqa: E731
+        timed(blit) if timed is not None else blit()
         out = np.empty((h, w, 3), np.uint8)
         self.blit_out[1].read_into(out, components=3, alignment=1)
         return out
@@ -646,6 +649,12 @@ class AliveGL:
         }
 
     # ----- lifecycle ------------------------------------------------------------
+    def free_readback(self):
+        """ink_read's output-size target, not needed while the ink feeds the
+        GPU rack directly."""
+        self._free(self.blit_out)
+        self.blit_out = None
+
     def free_targets(self):
         """The render targets only (the programs stay built): freed when the
         step turns off and allocated again on the next alive frame."""

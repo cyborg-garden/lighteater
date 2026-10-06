@@ -241,6 +241,13 @@ class PhysarumFieldGL:
         self.alive_react = 0.0     # the react lever, perceptually mapped
         self.alive_person = False  # a person matte is live (the dome weighs more)
         self.alive_sound = 0.0     # sens x amplitude (quickens the pulse)
+        # what the alive step itself costs a frame, ms: its GPU time (timer
+        # queries, read a frame late) plus the CPU time of its own calls,
+        # for the host's governor. 0 until measured or while it is off.
+        self.alive_ms = 0.0
+        self._aq_now, self._aq_prev, self._aq_free = [], [], []
+        self._acpu_now = self._acpu_prev = 0.0
+        self._aq_ok = True
         self._nl = None            # per-level bright ends (level_norms)
         self._stats_pbo = None     # fractal stats, read a frame late (_stats_late)
         self._stats_pending = False
@@ -459,6 +466,44 @@ class PhysarumFieldGL:
         self._alive = None
         self._alive_was = False
 
+    def _alive_timed(self, fn):
+        """Run fn (alive GL work) under a GPU timer query and a CPU clock;
+        both feed alive_ms. A context without timer queries falls back to
+        the CPU time alone."""
+        import time
+        t0 = time.perf_counter()
+        q = None
+        if self._aq_ok:
+            try:
+                q = self._aq_free.pop() if self._aq_free else self.ctx.query(time=True)
+            except Exception:                           # noqa: BLE001
+                self._aq_ok, q = False, None
+        try:
+            if q is not None:
+                with q:
+                    return fn()
+            return fn()
+        finally:
+            if q is not None:
+                self._aq_now.append(q)
+            self._acpu_now += time.perf_counter() - t0
+
+    def _alive_frame(self):
+        """A new frame: last frame's alive cost becomes alive_ms. Its timer
+        queries are read now, a frame late, when their result is ready (the
+        last frame's readback already waited for that work)."""
+        gpu = 0.0
+        for q in self._aq_prev:
+            try:
+                gpu += q.elapsed * 1e-6
+            except Exception:                           # noqa: BLE001
+                pass
+            self._aq_free.append(q)
+        ran = bool(self._aq_prev) or self._acpu_prev > 0.0
+        self.alive_ms = gpu + self._acpu_prev if ran else 0.0
+        self._aq_prev, self._aq_now = self._aq_now, []
+        self._acpu_prev, self._acpu_now = self._acpu_now, 0.0
+
     def _gl_drain(self):
         """Clear any GL error an earlier, unrelated call left set, so the
         check after an alive pass reads that pass alone (GL keeps one flag
@@ -479,7 +524,7 @@ class PhysarumFieldGL:
             return
         try:
             self._gl_drain()
-            fn(self._alive)
+            self._alive_timed(lambda: fn(self._alive))
             self._gl_check(where)
         except Exception as e:                      # noqa: BLE001 — §6.4
             self._alive_fail(e)
@@ -503,26 +548,35 @@ class PhysarumFieldGL:
         source) the picture lands there and nothing is read back: returns
         True. Otherwise returns (h, w, 3) uint8 RGB, row 0 at the top. None
         when the trail is empty or an alive pass failed (the host colourises
-        luminance() instead). Any GL error in the ink counts as a failure."""
+        luminance() instead). Any GL error in the ink counts as a failure.
+        Binds this field's context; inside a caller's `with self.ctx:` use
+        ink_frame_bound (moderngl's restore slot does not nest)."""
         with self.ctx:
-            ok = self.luminance_into_tex()
-            if not ok or self._alive is None or self._alive.out is None or not self.alive_on():
-                return None
-            ow, oh = out_size or self.render_size()
-            try:
-                self._gl_drain()
-                A = self._alive
-                A.ink_draw(lut_rows, pal_row, video_rgb, bg, video_mix)
-                if target is not None:
-                    A.ink_blit(target, int(ow), int(oh))
-                    self._gl_check("alive ink")
-                    return True
-                img = A.ink_read(int(ow), int(oh))
+            return self.ink_frame_bound(lut_rows, pal_row, video_rgb, bg, video_mix,
+                                        out_size, target)
+
+    def ink_frame_bound(self, lut_rows, pal_row, video_rgb=None, bg="off",
+                        video_mix=0.5, out_size=None, target=None):
+        """ink_frame for a caller that already holds this field's context."""
+        ok = self.luminance_into_tex()
+        if not ok or self._alive is None or self._alive.out is None or not self.alive_on():
+            return None
+        ow, oh = out_size or self.render_size()
+        A = self._alive
+        try:
+            self._gl_drain()
+            self._alive_timed(lambda: A.ink_draw(lut_rows, pal_row, video_rgb, bg, video_mix))
+            if target is not None:
+                self._alive_timed(lambda: A.ink_blit(target, int(ow), int(oh)))
+                A.free_readback()          # the rack reads: no output-size copy here
                 self._gl_check("alive ink")
-                return img
-            except Exception as e:                  # noqa: BLE001 — §6.4
-                self._alive_fail(e)
-                return None
+                return True
+            img = A.ink_read(int(ow), int(oh), timed=self._alive_timed)
+            self._gl_check("alive ink")
+            return img
+        except Exception as e:                      # noqa: BLE001 — §6.4
+            self._alive_fail(e)
+            return None
 
     def alive_stats(self):
         """The alive step's counts (events, tips, the pulse), None while it
@@ -734,6 +788,7 @@ class PhysarumFieldGL:
         matte = np.ascontiguousarray(matte, dtype=np.float32)
         gray = np.ascontiguousarray(gray, dtype=np.float32)
         with self.ctx:
+            self._alive_frame()
             self.tex_matte.write(matte)
             self.tex_gray.write(gray)
             if keep is not None:
@@ -1065,11 +1120,13 @@ class PhysarumFieldGL:
                 self._gl_drain()
                 A.targets()
                 out_fbo = A.out_for(rw, rh)[1]
-                self._compose(A.prog["compose"], A.vao["compose"], out_fbo, fa, rw, rh,
-                              extra=lambda pc: A.compose_uniforms(pc, fa))
-                A._unbind()
-                A.draw_heads()
-                A.copy_luminance(self.fbo_lum_hi)
+                def alive_compose():
+                    self._compose(A.prog["compose"], A.vao["compose"], out_fbo, fa, rw, rh,
+                                  extra=lambda pc: A.compose_uniforms(pc, fa))
+                    A._unbind()
+                    A.draw_heads()
+                    A.copy_luminance(self.fbo_lum_hi)
+                self._alive_timed(alive_compose)
                 self._gl_check("alive compose")
                 self.lum_tex = self.tex_lum_hi
                 return
