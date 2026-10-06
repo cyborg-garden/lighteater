@@ -212,6 +212,57 @@ def test_h_clock_moves_whole_lines():
     assert any(moved)
 
 
+def _hue_jumps(row):
+    """How many times the dominant channel changes along a row of RGB."""
+    dom = row.astype(int).argmax(-1)
+    return int((dom[1:] != dom[:-1]).sum())
+
+
+def test_thermal_wraps_a_smooth_ramp_into_rainbow_rings():
+    """A smooth grey ramp, the sky in every bent-camera thermal shot, comes
+    back as many false-colour bands: each channel wraps at its own level."""
+    ramp = np.tile(np.linspace(40, 230, 256).astype(np.uint8)[None, :, None], (32, 1, 3))
+    out = S.sensor_bend(ramp, "thermal", 0.6, 7, 3.0)
+    mid = out[16:18].reshape(-1, 256, 3)[0]
+    assert _hue_jumps(ramp[16]) <= 2
+    assert _hue_jumps(mid) >= 6
+
+
+def test_thermal_sparkles_the_shadows_more_than_the_lights():
+    px = np.zeros((64, 128, 3), np.uint8)
+    px[:, :64] = 18                       # shadow
+    px[:, 64:] = 200                      # light
+    out = S.sensor_bend(px, "thermal", 0.6, 5, 1.0).astype(float)
+    def spread(a):
+        return a.reshape(-1, 3).std(0).mean()
+    assert spread(out[4:-4, 4:60]) > 2 * spread(out[4:-4, 68:-4])
+
+
+def test_thermal_drags_blown_highlights_to_the_right():
+    px = np.full((24, 96, 3), 60, np.uint8)
+    px[8:16, 20:24] = 255
+    out = S.sensor_bend(px, "thermal", 0.8, 3, 0.0).astype(int)
+    far = out[8:16, 70:84].mean()
+    right = np.abs(out[8:16, 28:42].mean() - far)
+    left = np.abs(out[8:16, 4:18].mean() - far)
+    assert right > left + 10
+
+
+def test_line_streak_drags_edges_right_in_a_purple_cast():
+    px = np.full((96, 128, 3), 30, np.uint8)
+    px[:, 40:44] = 230                    # a bright post
+    out = S.sensor_bend(px, "streak", 0.8, 9, 2.0).astype(float)
+    after = out[:, 50:90].mean()
+    before = out[:, 4:36].mean()
+    assert after > before + 8             # streaks run right of the post
+    assert out[..., 1].mean() < (out[..., 0].mean() + out[..., 2].mean()) / 2
+
+
+def test_the_iconic_bends_come_first():
+    assert B.EFFECTS[:3] == ("bent", "thermal", "streak")
+    assert B.LOOK_NAMES[:3] == ("bent", "thermal", "streak")
+
+
 # ---------- sort and post ----------
 
 def _luma(px):

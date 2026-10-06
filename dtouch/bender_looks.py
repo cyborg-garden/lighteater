@@ -11,7 +11,8 @@ code, never retyped.
 - `bender_looks.json` (bundled by the page): the mode's card metadata, the
   effects in E's order and their titles, the looks, the ladders, the settle
   and cut-clock constants, the working-size budget and its governor, the
-  back-off, sound and autopilot sway, BENT CAM's mix, STACK's weights, and
+  back-off, sound and autopilot sway, BENT CAM's mix, THERMAL's and LINE
+  STREAK's constants, STACK's weights, and
   the bend loop's rate limits.
 - `bender_goldens.json` (imported only by the site's tests): the bends'
   outputs, as sha256 of the bytes or pixels, on the unit's three fixture
@@ -35,6 +36,7 @@ from . import bender as B
 from .bender_jpeg import (EFFECTS as JPEG_EFFECTS, STACK_WEIGHTS, bend,
                           mcu_offsets, rng32, scan_smear)
 from .bender_post import sort_runs
+from . import bender_sensor as S
 from .bender_sensor import BENT_MIX, SENSOR_EFFECTS, sensor_bend
 from .dither_looks import _dumps, _rgb
 from .modes import bender as mode
@@ -109,6 +111,10 @@ def looks_payload():
                   "auto_sway_s": B.AUTO_SWAY_S},
         "jpeg": {"quality": B.JPEG_Q, "block": B.BLOCK},
         "bent_mix": {k: _num(v) for k, v in BENT_MIX.items()},
+        "iconic": S.ICONIC,
+        "thermal": {"gain": list(S.THERMAL_GAIN), "noise": S.THERMAL_NOISE,
+                    "poster": S.THERMAL_POSTER, "noise_hz": S.THERMAL_NOISE_HZ},
+        "streak": {"cast": S.STREAK_CAST, "grab": S.STREAK_GRAB},
         "stack_weights": [[name, w] for name, w in STACK_WEIGHTS],
         "loop": {"max_bend_hz": mode.MAX_BEND_HZ, "stall_s": mode.STALL_S,
                  "respawn_gap_s": mode.RESPAWN_GAP_S,

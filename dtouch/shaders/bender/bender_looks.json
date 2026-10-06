@@ -3,9 +3,11 @@
  "key": "j",
  "blurb": "live jpeg\ndatabending",
  "accent": [90,225,255],
- "effects": ["bent","zigzag","erosion","remap","swap","chroma","stack","hclock","vclock","adc"],
+ "effects": ["bent","thermal","streak","zigzag","erosion","remap","swap","chroma","stack","hclock","vclock","adc"],
  "effect_titles": {
   "bent": "bent cam",
+  "thermal": "thermal",
+  "streak": "line streak",
   "zigzag": "zigzag perm",
   "erosion": "dqt erosion",
   "remap": "dht remap",
@@ -17,11 +19,27 @@
   "adc": "adc bits"
  },
  "jpeg_effects": ["zigzag","erosion","remap","swap","chroma","stack"],
- "sensor_effects": ["bent","hclock","vclock","adc"],
+ "sensor_effects": ["bent","thermal","streak","hclock","vclock","adc"],
  "looks": {
   "bent": {
    "effect": "bent",
    "amount": 0.65,
+   "split": 0,
+   "sort": "off",
+   "copy": 0,
+   "long": 0
+  },
+  "thermal": {
+   "effect": "thermal",
+   "amount": 0.55,
+   "split": 0,
+   "sort": "off",
+   "copy": 0,
+   "long": 0
+  },
+  "streak": {
+   "effect": "streak",
+   "amount": 0.7,
    "split": 0,
    "sort": "off",
    "copy": 0,
@@ -100,7 +118,7 @@
    "long": 0
   }
  },
- "look_names": ["bent","zigzag","erosion","remap","swap","chroma","stack","hclock","vclock","adc"],
+ "look_names": ["bent","thermal","streak","zigzag","erosion","remap","swap","chroma","stack","hclock","vclock","adc"],
  "safe_look": "bent",
  "ladders": {
   "amount": [0.25,0.5,0.75,1],
@@ -118,6 +136,8 @@
  "sort_band": [60,205],
  "settle_s": {
   "bent": 0,
+  "thermal": 0,
+  "streak": 0,
   "zigzag": 0,
   "erosion": 0,
   "remap": 0.35,
@@ -169,6 +189,17 @@
   "cast": 1,
   "slip": 0.7,
   "adc": 0.45
+ },
+ "iconic": 3,
+ "thermal": {
+  "gain": [0.8,2.2],
+  "noise": 70,
+  "poster": 2.5,
+  "noise_hz": 6
+ },
+ "streak": {
+  "cast": 1.4,
+  "grab": 40
  },
  "stack_weights": [
   ["swap",0.6],

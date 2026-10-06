@@ -18,6 +18,7 @@ from dtouch.bender_jpeg import mcu_offsets, validate_jpeg
 from dtouch.bender_looks import (FIXTURES, GOLDENS_PATH, LOOKS_PATH, UNIT_DIR,
                                  dumps_goldens, dumps_looks)
 from dtouch.bender_post import post
+from dtouch.bender_sensor import SENSOR_EFFECTS
 from dtouch.modes.bender import BenderMode
 from dtouch.physarum_gl import load_shared_shader, load_shader
 
@@ -201,10 +202,11 @@ def test_goldens_are_distinct_and_cover_every_bend(goldens):
         if effect in ("swap", "stack"):
             assert len(hs) == 2, effect
     effects = {c["effect"] for c in goldens["jpeg"]}
-    assert effects == set(B.EFFECTS) - {"bent", "hclock", "vclock", "adc"} | {"smear"}
+    assert effects == set(B.EFFECTS) - set(SENSOR_EFFECTS) | {"smear"}
     sens = [c["sha256"] for c in goldens["sensor"]]
     assert len(set(sens)) == len(sens)
-    assert {c["effect"] for c in goldens["sensor"]} == {"bent", "hclock", "vclock", "adc"}
+    assert {c["effect"] for c in goldens["sensor"]} == set(SENSOR_EFFECTS)
+    assert set(SENSOR_EFFECTS) == {"bent", "thermal", "streak", "hclock", "vclock", "adc"}
     assert all(c["runs"] > 0 for c in goldens["sort"])
     first = goldens["rng32"]["first"]
     assert len(set(first)) == len(first) and all(0 <= v < 1 for v in first)

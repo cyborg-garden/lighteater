@@ -26,6 +26,14 @@ BENT CAM, the landing look, is the three things every bent-camera account
 shows at once: a pink or green cast, slipped bands, posterised bursts that
 keep the outlines. Never 8x8 squares: those are a file's, not a sensor's.
 
+Two more whole looks follow it, each one fault taken all the way, tuned by
+eye against bent-camera footage:
+  THERMAL      a runaway gain line: values wrap round per colour, so smooth
+               areas come back as false-colour rings, the shadows speckle,
+               blown highlights streak right
+  LINE STREAK  a leaky sample-and-hold: in bands of lines every edge drags
+               into a long streak to the right, in a magenta cast
+
 Everything moves with `t` (seconds) through slow value noise: the fault
 drifts like a finger on a circuit board. The seed picks which fault.
 
@@ -47,12 +55,30 @@ import math
 
 import numpy as np
 
-SENSOR_EFFECTS = ("bent", "hclock", "vclock", "adc")
-SENSOR_TITLES = {"bent": "bent cam", "hclock": "h clock", "vclock": "v clock",
-                 "adc": "adc bits"}
+SENSOR_EFFECTS = ("bent", "thermal", "streak", "hclock", "vclock", "adc")
+SENSOR_TITLES = {"bent": "bent cam", "thermal": "thermal", "streak": "line streak",
+                 "hclock": "h clock", "vclock": "v clock", "adc": "adc bits"}
+# The first three are whole looks, iconic on their own; the rest are single
+# faults.
+ICONIC = 3
 
 # BENT CAM's three faults, weighed
 BENT_MIX = {"cast": 1.0, "slip": 0.7, "adc": 0.45}
+
+# THERMAL: the gain spread across the three colours (gain - 1 at amount 1 is
+# THERMAL_GAIN[0] + THERMAL_GAIN[1] x a per-colour hash), the shadow noise at
+# amount 1, the low bits dropped at amount 1, and how many times a second the
+# noise is drawn again.
+THERMAL_GAIN = (0.8, 2.2)
+THERMAL_NOISE = 70
+THERMAL_POSTER = 2.5
+THERMAL_NOISE_HZ = 6
+
+# LINE STREAK: the magenta cast at amount 1 (green sinks this far below)
+STREAK_CAST = 1.4
+# a sample this much brighter than the hold takes it over: streaks start at
+# bright edges
+STREAK_GRAB = 40
 
 _M32 = 0xFFFFFFFF
 
@@ -74,6 +100,17 @@ def hash01(a, b=0, c=0):
     h = ((h ^ (int(c) & _M32) ^ (h >> 16)) * 0x27D4EB2F) & _M32
     h ^= h >> 15
     return h / 4294967296.0
+
+
+def hash32_grid(idx, b, c):
+    """hash01's 32-bit integer for every value of the int64 array `idx`
+    (vectorised; the browser's per-sample loop gives the same numbers)."""
+    m = np.uint64(_M32)
+    h = (((idx.astype(np.uint64) & m) ^ np.uint64(0x9E3779B9)) * np.uint64(0x85EBCA6B)) & m
+    h = ((h ^ np.uint64(int(b) & _M32) ^ (h >> np.uint64(13))) * np.uint64(0xC2B2AE35)) & m
+    h = ((h ^ np.uint64(int(c) & _M32) ^ (h >> np.uint64(16))) * np.uint64(0x27D4EB2F)) & m
+    h ^= h >> np.uint64(15)
+    return h
 
 
 def vnoise(x, seed=0):
@@ -282,6 +319,92 @@ def green_bias(raw, bias):
     return raw
 
 
+def thermal(raw, amount, seed, t):
+    """THERMAL: a bent gain line. The amplifier in front of the ADC runs too
+    hot, so values overflow and wrap round, each colour at its own level:
+    a smooth sky comes back as false-colour rings that follow its
+    brightness, like a thermal camera. The same runaway gain lifts the
+    sensor's dark noise into coloured speckle in the shadows, the low bits
+    drop out (posterised bands that keep their edges), and blown highlights
+    spill along their line to the right. The rings crawl as the offsets
+    drift; the speckle is drawn again THERMAL_NOISE_HZ times a second."""
+    h, w = raw.shape
+    a = _clamp(amount, 0, 1)
+    v = raw.astype(np.int64)
+    idx = np.arange(h * w, dtype=np.int64).reshape(h, w)
+    frame = math.floor(t * THERMAL_NOISE_HZ)
+    spark = (hash32_grid(idx, frame, (seed ^ 0x7E57) & _M32) >> np.uint64(24)).astype(np.int64)
+    amp = _jround(a * THERMAL_NOISE)
+    dark = 255 - v
+    noise = ((spark - 128) * amp * ((dark * dark * dark) >> 16)) >> 15
+    out = np.empty_like(v)
+    sites = (((0, 0), 0), ((0, 1), 1), ((1, 0), 1), ((1, 1), 2))
+    gains, offs = [], []
+    for c in range(3):
+        breathe = 0.7 + 0.3 * vnoise(t * 0.09, seed + 61 + c)
+        gains.append(256 + _jround(256 * a * (THERMAL_GAIN[0] + THERMAL_GAIN[1]
+                                               * hash01(seed, 60 + c)) * breathe))
+        offs.append(math.floor(256 * vnoise(t * 0.05 + c * 3.1, seed + 64 + c)))
+    for (oy, ox), c in sites:
+        s = v[oy::2, ox::2]
+        out[oy::2, ox::2] = ((s * gains[c]) >> 8) + ((offs[c] * s) >> 8) + noise[oy::2, ox::2]
+    out &= 255
+    drop = 1 + math.floor(THERMAL_POSTER * a)
+    out &= 255 & ~((1 << drop) - 1)
+    # blown highlights spill right along their line
+    knee = 232 - _jround(30 * a)
+    keep = 0.9 + 0.07 * a
+    gain = 0.25 + 0.4 * a
+    rows = np.nonzero((v > knee).any(axis=1))[0]     # only lines with a highlight
+    if rows.size:
+        hv = v[rows]
+        ho = out[rows]
+        q = np.zeros(rows.size, dtype=np.float64)
+        for x in range(int(np.argmax((hv > knee).any(axis=0))), w):
+            src = hv[:, x]
+            q = q * keep + np.where(src > knee, (src - knee) * gain, 0.0)
+            hot = q > 0.5
+            if hot.any():
+                ho[hot, x] = np.minimum(255, ho[hot, x] + np.floor(q[hot]).astype(np.int64))
+        out[rows] = ho
+    return out.astype(np.uint8)
+
+
+def line_streak(raw, amount, seed, t):
+    """LINE STREAK: a sample-and-hold that leaks. In smeared bands of lines
+    the readout holds each sample and lets it go only slowly along the
+    line, so every edge drags into a long streak to the right; a bright
+    sample takes the hold over at once, so streaks start at bright edges.
+    The hold runs per Bayer phase (the colours stay put), the green sites
+    sink (the magenta cast of a bent clock), and the bands come and go."""
+    h, w = raw.shape
+    a = _clamp(amount, 0, 1)
+    green_bias(raw, -STREAK_CAST * (10 + 40 * a))
+    v = raw.astype(np.float64)
+    out = v.copy()
+    band_h = max(2, _jround(h * (0.006 + 0.02 * hash01(seed, 70))))
+    p = 0.3 + 0.6 * a
+    keep_hi = 0.93 + 0.06 * a
+    live = np.zeros(h, dtype=bool)
+    keep = np.zeros(h, dtype=np.float64)
+    for y in range(h):
+        band = math.floor((y + t * h * 0.01) / band_h)
+        live[y] = hash01(band, seed, 71) < p and vnoise(t * 0.3 + band * 0.7, seed + 72) > 0.3
+        keep[y] = keep_hi - 0.08 * hash01(band, seed, 73)
+    if live.any():
+        rows = np.nonzero(live)[0]
+        k = keep[rows]
+        lk = 1 - k
+        for par in (0, 1):
+            q = v[rows, par].copy()
+            for x in range(par + 2, w, 2):
+                s = v[rows, x]
+                q = q * k + s * lk
+                q = np.where(s > q + STREAK_GRAB, s, q)
+                out[rows, x] = q
+    return np.floor(out).astype(np.uint8)
+
+
 def bent_cam(raw, amount, seed, t, mix=None):
     """BENT CAM: the cast, the slipped bands, the posterised bursts."""
     mix = BENT_MIX if mix is None else mix
@@ -314,5 +437,6 @@ def sensor_bend(px, effect, amount, seed=1, t=0.0, mix=None):
     if effect == "bent":
         bent = bent_cam(raw, a, seed, t, mix)
     else:
-        bent = {"hclock": h_clock, "vclock": v_clock, "adc": adc_bits}[effect](raw, a, seed, t)
+        bent = {"thermal": thermal, "streak": line_streak, "hclock": h_clock,
+                "vclock": v_clock, "adc": adc_bits}[effect](raw, a, seed, t)
     return demosaic(bent)
