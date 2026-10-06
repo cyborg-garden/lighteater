@@ -3,9 +3,10 @@
  "key": "j",
  "blurb": "live jpeg\ndatabending",
  "accent": [90,225,255],
- "effects": ["bent","zigzag","erosion","remap","swap","chroma","stack","hclock","vclock","adc"],
+ "effects": ["bent","thermal","zigzag","erosion","remap","swap","chroma","stack","hclock","vclock","adc"],
  "effect_titles": {
   "bent": "bent cam",
+  "thermal": "thermal",
   "zigzag": "zigzag perm",
   "erosion": "dqt erosion",
   "remap": "dht remap",
@@ -17,11 +18,19 @@
   "adc": "adc bits"
  },
  "jpeg_effects": ["zigzag","erosion","remap","swap","chroma","stack"],
- "sensor_effects": ["bent","hclock","vclock","adc"],
+ "sensor_effects": ["bent","thermal","hclock","vclock","adc"],
  "looks": {
   "bent": {
    "effect": "bent",
    "amount": 0.65,
+   "split": 0,
+   "sort": "off",
+   "copy": 0,
+   "long": 0
+  },
+  "thermal": {
+   "effect": "thermal",
+   "amount": 0.55,
    "split": 0,
    "sort": "off",
    "copy": 0,
@@ -100,7 +109,7 @@
    "long": 0
   }
  },
- "look_names": ["bent","zigzag","erosion","remap","swap","chroma","stack","hclock","vclock","adc"],
+ "look_names": ["bent","thermal","zigzag","erosion","remap","swap","chroma","stack","hclock","vclock","adc"],
  "safe_look": "bent",
  "ladders": {
   "amount": [0.25,0.5,0.75,1],
@@ -118,6 +127,7 @@
  "sort_band": [60,205],
  "settle_s": {
   "bent": 0,
+  "thermal": 0,
   "zigzag": 0,
   "erosion": 0,
   "remap": 0.35,
@@ -169,6 +179,41 @@
   "cast": 1,
   "slip": 0.7,
   "adc": 0.45
+ },
+ "iconic": 2,
+ "thermal": {
+  "rings": [4,8],
+  "shadow": [40,4],
+  "grain": 40,
+  "noise_hz": 24,
+  "edge": [110,3],
+  "blur": 3,
+  "palettes": [
+   [
+    [255,40,200],
+    [120,30,160],
+    [40,220,230],
+    [40,230,70],
+    [240,230,50],
+    [255,120,40]
+   ],
+   [
+    [150,60,255],
+    [60,20,120],
+    [200,240,60],
+    [120,140,30],
+    [255,230,90],
+    [255,90,180]
+   ],
+   [
+    [240,40,40],
+    [90,10,20],
+    [40,220,60],
+    [10,80,20],
+    [255,140,30],
+    [190,240,40]
+   ]
+  ]
  },
  "stack_weights": [
   ["swap",0.6],

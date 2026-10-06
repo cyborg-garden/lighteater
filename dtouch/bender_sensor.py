@@ -26,6 +26,12 @@ BENT CAM, the landing look, is the three things every bent-camera account
 shows at once: a pink or green cast, slipped bands, posterised bursts that
 keep the outlines. Never 8x8 squares: those are a file's, not a sensor's.
 
+THERMAL follows it, one fault taken all the way, tuned by eye against
+bent-camera footage: wrapped data bits, so the brightness runs through a
+repeating palette and gradients come back as many thin rainbow rings round
+every light, shadows near-black, grain boiling, edges rimmed. It works on
+RGB, after the demosaic.
+
 Everything moves with `t` (seconds) through slow value noise: the fault
 drifts like a finger on a circuit board. The seed picks which fault.
 
@@ -47,12 +53,38 @@ import math
 
 import numpy as np
 
-SENSOR_EFFECTS = ("bent", "hclock", "vclock", "adc")
-SENSOR_TITLES = {"bent": "bent cam", "hclock": "h clock", "vclock": "v clock",
-                 "adc": "adc bits"}
+SENSOR_EFFECTS = ("bent", "thermal", "hclock", "vclock", "adc")
+SENSOR_TITLES = {"bent": "bent cam", "thermal": "thermal", "hclock": "h clock",
+                 "vclock": "v clock", "adc": "adc bits"}
+# The first two are whole looks, iconic on their own; the rest are single
+# faults.
+ICONIC = 2
 
 # BENT CAM's three faults, weighed
 BENT_MIX = {"cast": 1.0, "slip": 0.7, "adc": 0.45}
+
+# THERMAL: the rings across the brightness range (RINGS[0] + RINGS[1] x
+# amount), where the colour starts (luma SHADOW[0], rising SHADOW[1] a
+# level), the grain's density at amount 1 (out of 256) and how many times a
+# second it is drawn again, and the edge rim (a luma step over EDGE[0],
+# EDGE[1] a level). The palettes: two complementary hues per mode plus
+# their neighbours, flat bands in turn, cyclic; the touch seed picks one, so
+# a new touch is a hard cut to another mode.
+THERMAL_RINGS = (4, 8)
+THERMAL_SHADOW = (40, 4)
+THERMAL_GRAIN = 40
+THERMAL_NOISE_HZ = 24
+THERMAL_EDGE = (110, 3)
+# the ring field's box blur radius
+THERMAL_BLUR = 3
+THERMAL_PALETTES = (
+    # neon: pink and green, with violet, cyan, yellow, orange
+    ((255, 40, 200), (120, 30, 160), (40, 220, 230), (40, 230, 70), (240, 230, 50), (255, 120, 40)),
+    # ccd: violet and yellow-green
+    ((150, 60, 255), (60, 20, 120), (200, 240, 60), (120, 140, 30), (255, 230, 90), (255, 90, 180)),
+    # night: red and green
+    ((240, 40, 40), (90, 10, 20), (40, 220, 60), (10, 80, 20), (255, 140, 30), (190, 240, 40)),
+)
 
 _M32 = 0xFFFFFFFF
 
@@ -74,6 +106,17 @@ def hash01(a, b=0, c=0):
     h = ((h ^ (int(c) & _M32) ^ (h >> 16)) * 0x27D4EB2F) & _M32
     h ^= h >> 15
     return h / 4294967296.0
+
+
+def hash32_grid(idx, b, c):
+    """hash01's 32-bit integer for every value of the int64 array `idx`
+    (vectorised; the browser's per-sample loop gives the same numbers)."""
+    m = np.uint64(_M32)
+    h = (((idx.astype(np.uint64) & m) ^ np.uint64(0x9E3779B9)) * np.uint64(0x85EBCA6B)) & m
+    h = ((h ^ np.uint64(int(b) & _M32) ^ (h >> np.uint64(13))) * np.uint64(0xC2B2AE35)) & m
+    h = ((h ^ np.uint64(int(c) & _M32) ^ (h >> np.uint64(16))) * np.uint64(0x27D4EB2F)) & m
+    h ^= h >> np.uint64(15)
+    return h
 
 
 def vnoise(x, seed=0):
@@ -282,6 +325,75 @@ def green_bias(raw, bias):
     return raw
 
 
+def luma(p):
+    """Integer Rec. 601 luma 0..255 of RGB int arrays (..., 3)."""
+    return (306 * p[..., 0] + 601 * p[..., 1] + 117 * p[..., 2]) >> 10
+
+
+def box_blur(v, r):
+    """Integer box mean over a (2r+1)^2 window, edges clamped: floor of the
+    window sum over its area (the browser's running sums give the same)."""
+    k = 2 * r + 1
+    p = np.pad(v.astype(np.int64), r, mode="edge")
+    c = np.cumsum(p, axis=1)
+    c = np.pad(c, ((0, 0), (1, 0)))
+    hs = c[:, k:] - c[:, :-k]
+    c = np.cumsum(hs, axis=0)
+    c = np.pad(c, ((1, 0), (0, 0)))
+    return (c[k:] - c[:-k]) // (k * k)
+
+
+def palette_lut(keys):
+    """A cyclic 256-entry palette of flat bands, one per key colour (no
+    blend: a blend between complementary hues is grey)."""
+    n = len(keys)
+    return np.array([keys[(i * n) >> 8] for i in range(256)], dtype=np.int64)
+
+
+def thermal(px, amount, seed, t):
+    """THERMAL, on RGB: shorted high data bits make values wrap, so the
+    brightness runs through a repeating palette (palette(fract(luma x N)))
+    and smooth gradients come back as many thin false-colour rings, denser
+    toward the brights, hugging every light. The shadows stay near-black
+    (the colour lives in the mids and highs), chunky saturated grain boils
+    in the bands and is drawn again every frame, and outlines keep a thin
+    bright rim. The rings follow the picture; the palette mode is a hard
+    cut on a new touch."""
+    h, w = px.shape[:2]
+    a = _clamp(amount, 0, 1)
+    p = px[..., :3].astype(np.int64)
+    y = luma(p)
+    mode = math.floor(hash01(seed, 80) * len(THERMAL_PALETTES))
+    lut = palette_lut(THERMAL_PALETTES[mode])
+    n = THERMAL_RINGS[0] + _jround(THERMAL_RINGS[1] * a)
+    off = math.floor(256 * hash01(seed, 81))       # per touch: rings follow the picture only
+    # the rings follow the light, not the texture: a box-blurred luma
+    ys = box_blur(y, THERMAL_BLUR)
+    col = lut[(((ys * ys * n) >> 8) + off) & 255]
+    wgt = np.clip((y - THERMAL_SHADOW[0]) * THERMAL_SHADOW[1], 0, 256)
+    shadow = np.stack([y >> 1, y >> 3, y >> 1], -1)
+    out = (col * wgt[..., None] + shadow * (256 - wgt)[..., None]) >> 8
+    # grain: 2x2 cells of a random palette colour, dim in the shadows
+    frame = math.floor(t * THERMAL_NOISE_HZ)
+    yy, xx = np.mgrid[0:h, 0:w]
+    cell = (xx >> 1) + (yy >> 1) * ((w + 1) >> 1)
+    r = hash32_grid(cell, frame, (seed ^ 0x6A1) & _M32).astype(np.int64)
+    hit = (r >> 24) < _jround(a * THERMAL_GRAIN)
+    grain = (lut[(r >> 8) & 255] * (64 + ((3 * wgt) >> 2))[..., None]) >> 8
+    out = np.where(hit[..., None], grain, out)
+    # edges: a thin bright rim where the luma steps
+    yp = np.pad(y, 1, mode="edge")
+    e = np.abs(yp[1:-1, 2:] - yp[1:-1, :-2]) + np.abs(yp[2:, 1:-1] - yp[:-2, 1:-1])
+    k = np.clip((e - THERMAL_EDGE[0]) * THERMAL_EDGE[1], 0, 256)
+    out = out + (((255 - out) * k[..., None]) >> 8)
+    return out.astype(np.uint8)
+
+
+# THERMAL works on RGB, after the camera's demosaic: what the processor hands
+# on, not what the sensor read.
+RGB_BENDS = {"thermal": thermal}
+
+
 def bent_cam(raw, amount, seed, t, mix=None):
     """BENT CAM: the cast, the slipped bands, the posterised bursts."""
     mix = BENT_MIX if mix is None else mix
@@ -310,6 +422,8 @@ def sensor_bend(px, effect, amount, seed=1, t=0.0, mix=None):
     if a == 0 or effect not in SENSOR_EFFECTS or w < 4 or h < 4:
         return px
     seed = int(seed) & _M32
+    if effect in RGB_BENDS:
+        return RGB_BENDS[effect](px, a, seed, t)
     raw = mosaic(px)
     if effect == "bent":
         bent = bent_cam(raw, a, seed, t, mix)

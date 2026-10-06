@@ -5,8 +5,8 @@ Per bend, in a one-worker process (`bend_frame`, pixels in, pixels out):
   1. the camera frame, cover-cropped to the output's aspect, at the working
      size (dtouch.bender.working_size: about the inspiring camera's 1024 x
      768, never more than the camera delivers)
-  2. a sensor bend (dtouch.bender_sensor: BENT CAM, H CLOCK, V CLOCK, ADC
-     BITS) on the pixels, before any JPEG exists
+  2. a sensor bend (dtouch.bender_sensor: BENT CAM, THERMAL, H CLOCK,
+     V CLOCK, ADC BITS) on the pixels, before any JPEG exists
   3. a real baseline JPEG, encoded by cv2 (quality JPEG_Q)
   4. a JPEG bend on the bytes (dtouch.bender_jpeg: ZIGZAG PERM, DQT EROSION,
      DHT REMAP, SCAN SWAP, CHROMA AMP, STACK)
@@ -338,10 +338,9 @@ class BenderMode:
             Section("BEND", [
                 Cycle("effect", "bd_effect_idx", list(EFFECT_LABELS),
                       save_key="effect", status=str,
-                      tip="E steps through them. Bent cam is what a "
-                          "circuit-bent camera looks like at a glance; the "
-                          "next six bend the JPEG file, the last three the "
-                          "sensor."),
+                      tip="E steps through them. Bent cam and thermal are "
+                          "whole bent-camera looks; the next six bend the "
+                          "JPEG file, the last three the sensor."),
                 Slider("Amount", "bd_amount", 0.0, 1.0, save_key="amount",
                        status="{:.0%}",
                        tip="How hard the bend bites. B steps 25/50/75/100%. "

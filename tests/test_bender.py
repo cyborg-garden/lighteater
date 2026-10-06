@@ -212,6 +212,63 @@ def test_h_clock_moves_whole_lines():
     assert any(moved)
 
 
+def _hue_jumps(row):
+    """How many times the dominant channel changes along a row of RGB."""
+    dom = row.astype(int).argmax(-1)
+    return int((dom[1:] != dom[:-1]).sum())
+
+
+def _ring_count(row):
+    """Colour changes along a row: a hue jump or a big step in value."""
+    r = row.astype(int)
+    return int((np.abs(np.diff(r, axis=0)).sum(-1) > 90).sum())
+
+
+def test_thermal_turns_a_smooth_ramp_into_many_thin_rings():
+    """A smooth grey ramp, the sky round every light in the footage, comes
+    back as many thin false-colour rings, denser toward the brights."""
+    ramp = np.tile(np.linspace(0, 255, 512).astype(np.uint8)[None, :, None], (8, 1, 3))
+    out = S.sensor_bend(ramp, "thermal", 0.6, 7, 3.0)
+    row = out[4]
+    assert _hue_jumps(ramp[4]) <= 2
+    assert _ring_count(row) >= 10
+    assert _ring_count(row[384:]) > _ring_count(row[128:256])
+
+
+def test_thermal_keeps_the_shadows_near_black_and_colours_the_brights():
+    px = np.zeros((64, 128, 3), np.uint8)
+    px[:, :64] = 18                       # shadow
+    px[:, 64:] = 200                      # light
+    out = S.sensor_bend(px, "thermal", 0.6, 5, 1.0).astype(int)
+    shadow, light = out[4:-4, 4:60], out[4:-4, 68:-4]
+    assert np.median(shadow.max(-1)) < 24
+    sat = light.max(-1) - light.min(-1)
+    assert np.median(sat) > 100
+
+
+def test_thermal_grain_boils_every_frame_but_the_rings_hold():
+    ramp = np.tile(np.linspace(60, 255, 128).astype(np.uint8)[None, :, None], (64, 1, 3))
+    a = S.sensor_bend(ramp, "thermal", 0.6, 7, 3.00)
+    b = S.sensor_bend(ramp, "thermal", 0.6, 7, 3.05)
+    moved = (np.abs(a.astype(int) - b).sum(-1) > 0).mean()
+    assert 0.01 < moved < 0.3             # the grain moved, the rings did not
+
+
+def test_thermal_rims_a_hard_edge():
+    px = np.full((32, 64, 3), 10, np.uint8)
+    px[:, 32:] = 220
+    out = S.sensor_bend(px, "thermal", 0.6, 2, 0.0).astype(int)
+    rim = out[8:24, 31:33].sum(-1).mean()
+    inside = np.median(out[8:24, 44:56].sum(-1))
+    assert rim > inside + 60
+
+
+def test_the_iconic_bends_come_first():
+    assert B.EFFECTS[:2] == ("bent", "thermal")
+    assert B.LOOK_NAMES[:2] == ("bent", "thermal")
+    assert "streak" not in B.EFFECTS
+
+
 # ---------- sort and post ----------
 
 def _luma(px):

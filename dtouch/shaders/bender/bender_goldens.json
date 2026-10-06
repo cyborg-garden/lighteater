@@ -1051,6 +1051,24 @@
    "h": 64,
    "effect": "bent",
    "amount": 0.3,
+   "seed": 7,
+   "t": 0,
+   "sha256": "cfa29aa0ec8df86a4d48113273d2175b849567057421f3009451ce08206b1b13"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "bent",
+   "amount": 0.3,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "c47f22317260d3014cd2420d18d2e84e8362fe364b2124186cf74599e4b3e11e"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "bent",
+   "amount": 0.3,
    "seed": 3735928559,
    "t": 0,
    "sha256": "30b9a182da7a8478f425379f2bbd76a0cc0402010e648d91032de07db24e6cb7"
@@ -1081,6 +1099,24 @@
    "seed": 1,
    "t": 7.25,
    "sha256": "d6250d563a553e7d493fdaf2cda2f99f7a2666bf2b54ed089ae992eafb551d82"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "bent",
+   "amount": 0.65,
+   "seed": 7,
+   "t": 0,
+   "sha256": "44ce7c4e5e53243c66cc80fad7a16e6a78ec325781619d5976bc773f0adcb2d5"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "bent",
+   "amount": 0.65,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "6f73da86343bf1f8a95740a1d0aed223decea299dd42dc89c6acce701ebde8a1"
   },
   {
    "w": 96,
@@ -1123,6 +1159,24 @@
    "h": 64,
    "effect": "bent",
    "amount": 1,
+   "seed": 7,
+   "t": 0,
+   "sha256": "fc5144b6c4b2d8d2ac6c13db977305a6c7f36aa827bad668866ba0b1f5369641"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "bent",
+   "amount": 1,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "4b6c0de7861c91f70b7dc576096630ab4dc011055f02ada1657b0da12d533f2e"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "bent",
+   "amount": 1,
    "seed": 3735928559,
    "t": 0,
    "sha256": "b6273e191200a20f2016e9b616b45d53a4e1453382a65889f9a0f9bd96b455f6"
@@ -1135,6 +1189,168 @@
    "seed": 3735928559,
    "t": 7.25,
    "sha256": "dd610db0c47dd96b2e2fc84deab6795e3cbc3e5a6d951fa2963667f9bbe80fdf"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "thermal",
+   "amount": 0.3,
+   "seed": 1,
+   "t": 0,
+   "sha256": "bcaf4e0c0900cc9a1e5e828fac9dab82805a24ad931acd3db936dca638a50cfc"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "thermal",
+   "amount": 0.3,
+   "seed": 1,
+   "t": 7.25,
+   "sha256": "efcf6a692c04a80baab84c2dcd274590cbd9384f5fe269a0ac3e43ff4e202e9d"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "thermal",
+   "amount": 0.3,
+   "seed": 7,
+   "t": 0,
+   "sha256": "407c5071823223fc7877366277fc1e9f9fc3b20b7328c669f7a85b3a9b8fd054"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "thermal",
+   "amount": 0.3,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "022d08d7b1524b194f49e8a0cb3d66fe551208db09d1f4b97db33f48a04c1c70"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "thermal",
+   "amount": 0.3,
+   "seed": 3735928559,
+   "t": 0,
+   "sha256": "0556d6d3715efd02e15a1cb28fc1ef25c1f70385b248d6f7d8988bf08f690a8c"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "thermal",
+   "amount": 0.3,
+   "seed": 3735928559,
+   "t": 7.25,
+   "sha256": "8584c55746d4c59c7a647f6c178c62fcae4b16a498fb88cb4666c090aba32dfa"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "thermal",
+   "amount": 0.65,
+   "seed": 1,
+   "t": 0,
+   "sha256": "a1863d2743ad267fbe87a585e60020bd62a143c7afa8e6ba9e16ce6f1ce138d4"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "thermal",
+   "amount": 0.65,
+   "seed": 1,
+   "t": 7.25,
+   "sha256": "6e61dec858c925bdbebbe3a35ab05cf4842a0910422e389b0b23082e3ab07e00"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "thermal",
+   "amount": 0.65,
+   "seed": 7,
+   "t": 0,
+   "sha256": "a9e888b2e7f29c5847e1638f3e25f156ec938226126eec4d975dea4a41eca4d4"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "thermal",
+   "amount": 0.65,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "8605f202d5e2fac4294e4cfe2d6e286a56057d48f1176a5785275cde8085bb2b"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "thermal",
+   "amount": 0.65,
+   "seed": 3735928559,
+   "t": 0,
+   "sha256": "bcced34414ddf3328498475eb6103e4b46853b06483636cd657bde5b9c6cfdfa"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "thermal",
+   "amount": 0.65,
+   "seed": 3735928559,
+   "t": 7.25,
+   "sha256": "9e588b7c4886a875933ad551a68b1a4a1eb22084543f887d4eb94b8cdd639f3d"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "thermal",
+   "amount": 1,
+   "seed": 1,
+   "t": 0,
+   "sha256": "3d5e7fba06a00488b346cabdc276f49a868ee721323b93d0c991b14fb54253a2"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "thermal",
+   "amount": 1,
+   "seed": 1,
+   "t": 7.25,
+   "sha256": "71ae10ba08ff8fce898e7e65313b92d56b02535b4b1ff2facfbb438ff550d8d2"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "thermal",
+   "amount": 1,
+   "seed": 7,
+   "t": 0,
+   "sha256": "4d2dc561a9ba0d47f9253691c4e6e8c42c9903b983c8b8e52fb9aa8d6e813f28"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "thermal",
+   "amount": 1,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "a11fa158082e52e14710f198b24a9d94996a49f623b439a7f358fe928b7ae792"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "thermal",
+   "amount": 1,
+   "seed": 3735928559,
+   "t": 0,
+   "sha256": "ceca0e8ba36d756ae19ac500d17b7c0dc1114a6f8804602b741b002a84fd4a38"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "thermal",
+   "amount": 1,
+   "seed": 3735928559,
+   "t": 7.25,
+   "sha256": "cd8bb50886f4ded69b38d717a0c804f04720fe2fd869729e0725e9b24dd0ab62"
   },
   {
    "w": 96,
@@ -1153,6 +1369,24 @@
    "seed": 1,
    "t": 7.25,
    "sha256": "fccec969d4df41219c48cb3ab9a595d544403b31a3d69ed0e6af0570614334ef"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "hclock",
+   "amount": 0.3,
+   "seed": 7,
+   "t": 0,
+   "sha256": "e84e0663d63918b011ec2c79d14ba156ee9c6a3bfd92d2e28daa9dd4b0e327cd"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "hclock",
+   "amount": 0.3,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "41e70676f754813fcf9ced58c612ae4eeccc8115fdf251b84f381d6df70075fc"
   },
   {
    "w": 96,
@@ -1195,6 +1429,24 @@
    "h": 64,
    "effect": "hclock",
    "amount": 0.65,
+   "seed": 7,
+   "t": 0,
+   "sha256": "173f800bbad53b7c101453385bb8eee9e9d44a6f37c859a5810c013e61ec1c03"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "hclock",
+   "amount": 0.65,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "d2db7d93123a9d3abd00fa5bc4211a1c6a851aaf61f1802e57b954f187c36846"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "hclock",
+   "amount": 0.65,
    "seed": 3735928559,
    "t": 0,
    "sha256": "ab6e672c21e8f98ba0b3567b1f68d9812a1dae1bf844166c2c0f3335d18b6f29"
@@ -1225,6 +1477,24 @@
    "seed": 1,
    "t": 7.25,
    "sha256": "2b6314d6dd04120f837dc1fc22abd93800d12254801dfca9010ad87739e4fe90"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "hclock",
+   "amount": 1,
+   "seed": 7,
+   "t": 0,
+   "sha256": "76a86562d76dd199e9105711456857db5f0981784f0cd0a93d93bbd8941a8c34"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "hclock",
+   "amount": 1,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "d54696d07a77466d44d07c71e424472d16545b193242484dfb8c5c14e764e80e"
   },
   {
    "w": 96,
@@ -1267,6 +1537,24 @@
    "h": 64,
    "effect": "vclock",
    "amount": 0.3,
+   "seed": 7,
+   "t": 0,
+   "sha256": "180387d182396dc90e5eb6233e12534264959a90a30196fb75cc7e5e981c956e"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "vclock",
+   "amount": 0.3,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "26f17d70163044652cf057c2737a0abc9c758f60c4b6bf91ab03166fb371254a"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "vclock",
+   "amount": 0.3,
    "seed": 3735928559,
    "t": 0,
    "sha256": "156fb0d6b3d5f11098b8405e8221b789573ceb8c2b5721289ce422686ce49e82"
@@ -1297,6 +1585,24 @@
    "seed": 1,
    "t": 7.25,
    "sha256": "9be0b5efcfab60eb2c1205a68da325052b53292e87c64f481d9417f714ab954e"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "vclock",
+   "amount": 0.65,
+   "seed": 7,
+   "t": 0,
+   "sha256": "d9dc1eba5f7420c5fafc9897873dc3deb34267962f3510e9c979257d04b14255"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "vclock",
+   "amount": 0.65,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "b184a91b6e1bb9cf2bcb911ceeead51ba31da74e99591ba33bac0e217a376fce"
   },
   {
    "w": 96,
@@ -1339,6 +1645,24 @@
    "h": 64,
    "effect": "vclock",
    "amount": 1,
+   "seed": 7,
+   "t": 0,
+   "sha256": "6e741821b209796caadd030b907960eeefdfbc1f9f8913d956cf0c7ad7954d34"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "vclock",
+   "amount": 1,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "5e2485acc38ca6a32a5688ea675d1d0a02497c30bfbab667ee6a6a8b407a97aa"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "vclock",
+   "amount": 1,
    "seed": 3735928559,
    "t": 0,
    "sha256": "2217e2589b75d14a3e03e11c29b5368f30cd5e50b2ca8379df9e940eb00b976f"
@@ -1369,6 +1693,24 @@
    "seed": 1,
    "t": 7.25,
    "sha256": "05e509cc013e75fbde600f87441764620b1f1ca7fb3a3cceb73840b7cdf6a29f"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "adc",
+   "amount": 0.3,
+   "seed": 7,
+   "t": 0,
+   "sha256": "51dbc001626e504330d74c56ddfea59dc33ad9a6c0d7344d0fc6601ca9c546fa"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "adc",
+   "amount": 0.3,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "217106239f891104930576f3b438d31e02b398d70d9169ca3adba6634fc1faa1"
   },
   {
    "w": 96,
@@ -1411,6 +1753,24 @@
    "h": 64,
    "effect": "adc",
    "amount": 0.65,
+   "seed": 7,
+   "t": 0,
+   "sha256": "bc8b9591cfdd066e6c52a54457b42cdb32ec479dc3a78a9a86e3a3957c4789f7"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "adc",
+   "amount": 0.65,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "0a2bfa0e3ed17ed8c38a49b559775cf4eed88b8023c10e0c8add344044a25755"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "adc",
+   "amount": 0.65,
    "seed": 3735928559,
    "t": 0,
    "sha256": "340b604e1f989fcac108b73f4ec26aa40edc6a88a1739194b083ceb260b7d570"
@@ -1441,6 +1801,24 @@
    "seed": 1,
    "t": 7.25,
    "sha256": "ba8c375c42c8dd39e3beb473d208fbfafda9936e0a5c69b766b2c11fb213a194"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "adc",
+   "amount": 1,
+   "seed": 7,
+   "t": 0,
+   "sha256": "7ca7ffa6820a4f79fb438142a35080713c460857738a3d0e03e914fcf032f627"
+  },
+  {
+   "w": 96,
+   "h": 64,
+   "effect": "adc",
+   "amount": 1,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "9f859326b0682c463b0c41f069dcbc544cd5f4a432dfe99d6e15614f9034d743"
   },
   {
    "w": 96,
@@ -1483,6 +1861,24 @@
    "h": 37,
    "effect": "bent",
    "amount": 0.3,
+   "seed": 7,
+   "t": 0,
+   "sha256": "b06b759bf600a264873d941378b2dacb7dbddf0de2cbb8b6a6949c0aff908100"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "bent",
+   "amount": 0.3,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "86c85c7122ecd57efc9e8d1c3df748fa7fbddab491a4e7cf7835e5485ec62ddb"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "bent",
+   "amount": 0.3,
    "seed": 3735928559,
    "t": 0,
    "sha256": "fcfe56445e2d051d76663c611001327b8c6897f2fbf76b5bdb2260236cbe1228"
@@ -1513,6 +1909,24 @@
    "seed": 1,
    "t": 7.25,
    "sha256": "601e971ab6bb365e3565b0e835753fb1a267426f1376c4d3536f14c50f53e0fa"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "bent",
+   "amount": 0.65,
+   "seed": 7,
+   "t": 0,
+   "sha256": "b86d708bf83cdd646cfc0fa1556ff08dfeed9809b92d792e17c831f811870287"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "bent",
+   "amount": 0.65,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "85eb80c52ac85be6a48e8d73ab2172966b7f703e7a502bc6939664865120e96d"
   },
   {
    "w": 101,
@@ -1555,6 +1969,24 @@
    "h": 37,
    "effect": "bent",
    "amount": 1,
+   "seed": 7,
+   "t": 0,
+   "sha256": "34366f7be611968ee0a3e70919b7699f118c7435eec58906b7fb7a2e0ad0ffc0"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "bent",
+   "amount": 1,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "10b920587f8db811cbb94fccf14fb2f54c12362362aac2c7ffdfc04b6c38bf81"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "bent",
+   "amount": 1,
    "seed": 3735928559,
    "t": 0,
    "sha256": "659844707050ef49209ef7d018b4b331f0c488c6ca4d753c744fc06fc63a0b08"
@@ -1567,6 +1999,168 @@
    "seed": 3735928559,
    "t": 7.25,
    "sha256": "d58141ca93e9ef630372c1fa5cbd8c286785264e5f746a702e40cef0b3b20d49"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "thermal",
+   "amount": 0.3,
+   "seed": 1,
+   "t": 0,
+   "sha256": "18bcaaa5f7fe913e3ffa74a01c2dae8a2df9add1fd91c4dbc74a0331c4e3f7ee"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "thermal",
+   "amount": 0.3,
+   "seed": 1,
+   "t": 7.25,
+   "sha256": "1f76dcddd40dbf43cb7c004d8fa18f070bce21777274b37f6df7dc049d50b0ef"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "thermal",
+   "amount": 0.3,
+   "seed": 7,
+   "t": 0,
+   "sha256": "35b15ce9bf54eb7b613d59ae433b13c2d0b97fd847981156dfa149b1936b3fe6"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "thermal",
+   "amount": 0.3,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "c6eedf0e4c6d20018c572fa01f002eef2663274a7bb7b514adc1fba4bd313df0"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "thermal",
+   "amount": 0.3,
+   "seed": 3735928559,
+   "t": 0,
+   "sha256": "b1d388fb289c8f9bc25cb5f08849bc8396d7b871cc5566bce67e388d749db365"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "thermal",
+   "amount": 0.3,
+   "seed": 3735928559,
+   "t": 7.25,
+   "sha256": "c4ff514d2799f5bf5629a27ba44304000eab8aa7c8215ba0ccee38552e4f20f1"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "thermal",
+   "amount": 0.65,
+   "seed": 1,
+   "t": 0,
+   "sha256": "c3b7e85739bdc849cc9db67e31c0598d0af958bc13f3dd2b39eb8f3c20ca8f5e"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "thermal",
+   "amount": 0.65,
+   "seed": 1,
+   "t": 7.25,
+   "sha256": "c3984a31cb0d65fd4f7664d4d112240a0a5cb3af5542f033c7cfe318201c34ee"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "thermal",
+   "amount": 0.65,
+   "seed": 7,
+   "t": 0,
+   "sha256": "52c9ae71391a89b9e7536516ff194d3521b1dd804b23bde5b3866040695717ef"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "thermal",
+   "amount": 0.65,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "fa852db17e6c5bea79e3be5260b31af91e98da4e723133fa65012d21c0e043e1"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "thermal",
+   "amount": 0.65,
+   "seed": 3735928559,
+   "t": 0,
+   "sha256": "b77c6411f300f38ab86244813bd6d9e9182ac224074f242053182474e2cbba5c"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "thermal",
+   "amount": 0.65,
+   "seed": 3735928559,
+   "t": 7.25,
+   "sha256": "b740aee7b47d680420c47045417416645a3c369b4b93bc80f0ca3ebdccb1b328"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "thermal",
+   "amount": 1,
+   "seed": 1,
+   "t": 0,
+   "sha256": "e1ca9bc654adac0a8fb78eda3a0c2c7eebbc0ad89a37279965f64635826da93e"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "thermal",
+   "amount": 1,
+   "seed": 1,
+   "t": 7.25,
+   "sha256": "7550c1804359cadb33d603ce5b30eb8b647f6148dde2f8b58372ae7d162747e7"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "thermal",
+   "amount": 1,
+   "seed": 7,
+   "t": 0,
+   "sha256": "bab5ea2dda04a08d10966a05be1c3bbaf6f6f51a88c9ef515cecc2a183839b6f"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "thermal",
+   "amount": 1,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "75fe60e0736825db41d20e43f3c8816818ee519a16c155e95b7895b4336425ff"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "thermal",
+   "amount": 1,
+   "seed": 3735928559,
+   "t": 0,
+   "sha256": "2312b90d5543182173c3800b9370377eda5624f8b34ee00cb224bfbda33c6b4e"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "thermal",
+   "amount": 1,
+   "seed": 3735928559,
+   "t": 7.25,
+   "sha256": "a29b7d000731798d55b25a0f26cc3938eaa90f7cea73a4e16dc28f156c61f8a4"
   },
   {
    "w": 101,
@@ -1585,6 +2179,24 @@
    "seed": 1,
    "t": 7.25,
    "sha256": "2983e1dde36668db5b2746e53e4fb6cfaa659f20f98a1a4e2d338887be3a90a9"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "hclock",
+   "amount": 0.3,
+   "seed": 7,
+   "t": 0,
+   "sha256": "8daf92bb9b7463db32a8e12e02913a4599603e5b7c7a7bfa8ce713cc074d71e2"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "hclock",
+   "amount": 0.3,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "307d285fadac3dc170a5b318fe869acb6dfbac2abe842b5f89f23fde95424fd2"
   },
   {
    "w": 101,
@@ -1627,6 +2239,24 @@
    "h": 37,
    "effect": "hclock",
    "amount": 0.65,
+   "seed": 7,
+   "t": 0,
+   "sha256": "905d3d7a7da0e517c218c55976f7336042dd086447e974f38ec595c90cc764ab"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "hclock",
+   "amount": 0.65,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "2ee101c2e8f5866a79b341f3d1a11ff71950a56759b4e9f8050f1918c4f0c549"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "hclock",
+   "amount": 0.65,
    "seed": 3735928559,
    "t": 0,
    "sha256": "41d5279c130a61a818ed686cfe6495ac7ba75cb266e035fb2940263721c8f1fc"
@@ -1657,6 +2287,24 @@
    "seed": 1,
    "t": 7.25,
    "sha256": "834181e1ba63e2b15be09c4df931af15b8e4e367e8da15987a8c9e2f9a5c0d8d"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "hclock",
+   "amount": 1,
+   "seed": 7,
+   "t": 0,
+   "sha256": "ddb0f9cda0bdce8c899c56db1c327214fc2793773ff0fcada17046e83dec5474"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "hclock",
+   "amount": 1,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "4e6839ed41402af26f9b62130ecbf0321613182577ac695854eda968f506c7e0"
   },
   {
    "w": 101,
@@ -1699,6 +2347,24 @@
    "h": 37,
    "effect": "vclock",
    "amount": 0.3,
+   "seed": 7,
+   "t": 0,
+   "sha256": "9e6539e854bff5c0b7b8a05c53671e5f5c4273903836ed6b66d30b18151268b0"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "vclock",
+   "amount": 0.3,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "b97c9135de3ab908d28d59d942e7cef61e8599141e493302d73b3d0ae892751c"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "vclock",
+   "amount": 0.3,
    "seed": 3735928559,
    "t": 0,
    "sha256": "16e6fb4b1caac6476e1e927334184ff6ea882e98288a4a1a5c85d7121d7daf9e"
@@ -1729,6 +2395,24 @@
    "seed": 1,
    "t": 7.25,
    "sha256": "7accfc632fd3eb0b5b1de19e05011b43e785834950c64698c12389046abc13cf"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "vclock",
+   "amount": 0.65,
+   "seed": 7,
+   "t": 0,
+   "sha256": "a6a20194fad076e8887a0505d41e7f096496fa299290bb47a3a237eeac0440f4"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "vclock",
+   "amount": 0.65,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "950796d0bbaadad21e1f35312e414d219b7ac0bcf63e2aafd23e1d07793c6886"
   },
   {
    "w": 101,
@@ -1771,6 +2455,24 @@
    "h": 37,
    "effect": "vclock",
    "amount": 1,
+   "seed": 7,
+   "t": 0,
+   "sha256": "4bcca36c07c3b6b042f031af0fa6f3b97d815ba6829958a25288529ab93851f0"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "vclock",
+   "amount": 1,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "2b47c85cc7f351db8fafdb4f6f16714988b97da6292f1d8605d5939b7dfeaf52"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "vclock",
+   "amount": 1,
    "seed": 3735928559,
    "t": 0,
    "sha256": "696ef8c916c37c6a307fba1a51df04516d82ead9850351307d8d83449d4266ef"
@@ -1801,6 +2503,24 @@
    "seed": 1,
    "t": 7.25,
    "sha256": "0776302c5e102025a6100faf8c6382bfbf1e10d2c1a949d87d3b145a38e91054"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "adc",
+   "amount": 0.3,
+   "seed": 7,
+   "t": 0,
+   "sha256": "5d1a43dd23ce3d63256cc6747c1157c37c7b4682b7aef3a8654c4d81b6a800b5"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "adc",
+   "amount": 0.3,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "a53c7162cf74774e2184d8fd2492989cfe45049bb67065636059aaa623216c71"
   },
   {
    "w": 101,
@@ -1843,6 +2563,24 @@
    "h": 37,
    "effect": "adc",
    "amount": 0.65,
+   "seed": 7,
+   "t": 0,
+   "sha256": "e7da3aa8eda959a2f2ccda86b3b2ff04da55d68a7cc8b72087dd679237efa3f4"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "adc",
+   "amount": 0.65,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "f62574000f06a3c99850d75769eb119a2b13388340e142223aec5e6b8ad2d685"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "adc",
+   "amount": 0.65,
    "seed": 3735928559,
    "t": 0,
    "sha256": "3ab63c967bae608deb3cbafda9afd35f9ea00dd1a15dd9c166f35a0df01cd508"
@@ -1873,6 +2611,24 @@
    "seed": 1,
    "t": 7.25,
    "sha256": "2a6b0f896d3f78ab2601e741502af26324dfa1a552e289d31413c818ff98bd91"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "adc",
+   "amount": 1,
+   "seed": 7,
+   "t": 0,
+   "sha256": "7cfd34dc3a0c31bcc290a879b08adf6f495ff6d946ee6d46a0eb955741125258"
+  },
+  {
+   "w": 101,
+   "h": 37,
+   "effect": "adc",
+   "amount": 1,
+   "seed": 7,
+   "t": 7.25,
+   "sha256": "757c9dd02b09de82447f60dd77ba69395cb4112f92ea6529729d677e5df98a0f"
   },
   {
    "w": 101,
