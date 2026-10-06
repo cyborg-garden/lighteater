@@ -138,6 +138,7 @@
   "vclock": 0,
   "adc": 0
  },
+ "settle_stretch": 2,
  "cut": {
   "every_s": 1.8,
   "onset_gap_s": 0.3,

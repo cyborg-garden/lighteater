@@ -6,6 +6,7 @@ piece promises on its own: the JPEG bends keep the stream decodable, amount 0
 is the identity, the sensor bends model a Bayer sensor, the clocks and
 back-off behave, and the mode plugs into the shell headless.
 """
+import math
 import os
 import time
 
@@ -552,3 +553,67 @@ def test_a_stalled_bend_is_abandoned_not_waited_on(tmp_path, monkeypatch):
     assert m.stalls == 1
     gate.set()
     m.stop()
+
+
+# ---------- settle per bend ----------
+
+def test_settle_folds_per_bend_not_per_second():
+    """A bitstream bend's settle averages the same number of bends on any
+    machine: a slow machine's longer frames must not weigh each bend more."""
+    fast = B.settle_alpha("remap", 0, 1 / 60, 1, 30)
+    slow = B.settle_alpha("remap", 0, 1 / 16, 1, 30)    # 16 fps, inside the stretch cap
+    assert fast == pytest.approx(slow)
+    assert fast == pytest.approx(1 - math.exp(-1 / (B.SETTLE_S["remap"] * 30)))
+    two = B.settle_alpha("swap", 0, 0.01, 2, 30)
+    one = B.settle_alpha("swap", 0, 0.01, 1, 30)
+    assert 1 - two == pytest.approx((1 - one) ** 2)
+
+
+def test_settle_never_stretches_past_twice_its_time_constant():
+    tau = B.SETTLE_S["remap"]
+    floor = 1 - math.exp(-0.05 / (B.SETTLE_STRETCH * tau))
+    assert B.settle_alpha("remap", 0, 0.05, 0, 30) == pytest.approx(floor)
+    # one bend in half a second (2 a second): wall time at 2 x tau wins
+    assert B.settle_alpha("remap", 0, 0.5, 1, 30) == pytest.approx(
+        1 - math.exp(-0.5 / (B.SETTLE_STRETCH * tau)))
+
+
+def test_settle_over_the_camera_runs_on_wall_time():
+    tau = B.SETTLE_S["remap"]
+    assert B.settle_alpha("remap", 0, 0.1, 0, 30, camera=True) == pytest.approx(
+        1 - math.exp(-0.1 / tau))
+
+
+def test_a_settled_look_follows_the_camera_after_give_up(tmp_path):
+    """No bends arrive while the camera shows unbent (first bend, respawn
+    waits, gave up): the settle must still follow it, not freeze."""
+    host = _booted(tmp_path)
+    m = host.mode
+    for effect in ("remap", "swap", "stack"):
+        name = next(n for n, c in BenderMode.BUILTIN.items()
+                    if c["effect"] == B.EFFECT_TITLES[effect])
+        assert host._apply_look(name, BenderMode.BUILTIN[name])
+        m.start(host)
+        fa = _scene(180, 320, seed=1)
+        fb = 255 - _scene(180, 320, seed=7)
+        m.gave_up = True
+        m.bent = None
+        m.respawn_at = None
+        if m._worker is not None:
+            m._worker.kill()
+            m._worker = None
+        m.inflight = None
+        outs = [m.step(fa if i % 2 == 0 else fb, None, 1 / 30).astype(int) for i in range(30)]
+        m.stop()
+        assert np.abs(outs[-1] - outs[-2]).mean() > 5, f"{effect}: frozen on the camera"
+
+
+def test_long_exposure_stays_on_wall_time():
+    a = B.settle_alpha("remap", 3, 0.1, 0, 30)
+    assert a == pytest.approx(1 - math.exp(-0.1 / 1.5))
+    assert B.settle_alpha("remap", 3, 0.1, 5, 30) == pytest.approx(a)
+    assert B.settle_alpha("remap", 3, 0.1, 5, 30, camera=True) == pytest.approx(a)
+
+
+def test_no_settle_no_alpha():
+    assert B.settle_alpha("bent", 0, 0.1, 1, 30) == 0.0

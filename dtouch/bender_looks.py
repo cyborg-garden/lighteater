@@ -95,6 +95,7 @@ def looks_payload():
         },
         "sort_band": list(B.SORT_BAND),
         "settle_s": {k: _num(v) for k, v in B.SETTLE_S.items()},
+        "settle_stretch": B.SETTLE_STRETCH,
         "cut": {
             "every_s": B.CUT_EVERY_S,
             "onset_gap_s": B.ONSET_GAP_S,
@@ -195,6 +196,25 @@ def _sort_cases():
     return cases
 
 
+# settle_alpha's inputs: per bend, the stretch floor, a held frame, the
+# camera fallback, a long exposure, an effect with no settle
+SETTLE_CASES = (
+    ("remap", 0, 1 / 60, 1), ("remap", 0, 1 / 16, 1), ("remap", 0, 0.5, 1),
+    ("remap", 0, 0.05, 0), ("swap", 0, 0.01, 2), ("stack", 0, 0.03, 3),
+    ("remap", 3, 0.1, 5), ("bent", 0, 0.1, 1),
+)
+
+
+def _settle_cases():
+    cases = []
+    for effect, long, dt, n in SETTLE_CASES:
+        for camera in (False, True):
+            cases.append({"effect": effect, "long": long, "dt": dt, "new_bends": n,
+                          "max_hz": mode.MAX_BEND_HZ, "camera": camera,
+                          "alpha": B.settle_alpha(effect, long, dt, n, mode.MAX_BEND_HZ, camera)})
+    return cases
+
+
 def goldens_payload():
     r = rng32(12345)
     return {
@@ -208,6 +228,7 @@ def goldens_payload():
         "jpeg": _jpeg_cases(),
         "sensor": _sensor_cases(),
         "sort": _sort_cases(),
+        "settle": _settle_cases(),
     }
 
 

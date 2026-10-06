@@ -227,6 +227,7 @@ class BenderMode:
         self.bend_ms = 0.0            # the worker's own time per bend, smoothed
         self.t = 0.0
         self.bends = 0
+        self.folded_bends = 0          # bends already in the running mean
         self.rate = 0.0
         self.since_govern = 0.0
         self.decode_fails = self.dead_rejects = self.parse_fails = self.stalls = 0
@@ -595,7 +596,8 @@ class BenderMode:
             self.size = (w, h)
             self.bent = None                  # never the last bend, frozen
         pic = self.bent
-        if pic is None or pic.shape[:2] != (self.size[1], self.size[0]):
+        camera = pic is None or pic.shape[:2] != (self.size[1], self.size[0])
+        if camera:
             # nothing bent at this size yet: the camera, unbent, not black
             w, h = self.size if self.size[0] else self._working_size(frame_bgr)
             pic = cv2.cvtColor(cv2.resize(cover_crop(frame_bgr, w / h), (w, h),
@@ -603,10 +605,11 @@ class BenderMode:
                                cv2.COLOR_BGR2RGB)
         pic = post(pic, self.split(), self.copy(),
                    seed=(self.cut.seed % 9973) + 0.5, block=B.BLOCK)
-        tau = B.stack_tau(self.effect(), self.long())
-        if tau > 0:
-            alpha = 1.0 if self.stack is None else 1 - math.exp(-dt / tau)
-            if self.stack is not None and self.stack.shape != pic.shape:
+        alpha = B.settle_alpha(self.effect(), self.long(), dt,
+                               self.bends - self.folded_bends, MAX_BEND_HZ, camera)
+        self.folded_bends = self.bends
+        if alpha != 0.0:
+            if self.stack is None or self.stack.shape != pic.shape:
                 self.stack = None
                 alpha = 1.0
             self.stack = fold(self.stack, pic, alpha)
