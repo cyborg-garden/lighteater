@@ -54,7 +54,7 @@ GOLDEN_SEEDS = (1, 99)
 GOLDEN_PHASE = 0.37
 SENSOR_SIZES = ((96, 64), (101, 37))     # an odd width and height too
 SENSOR_AMOUNTS = (0.3, 0.65, 1)
-SENSOR_SEEDS = (1, 3735928559)
+SENSOR_SEEDS = (1, 7, 3735928559)     # 7 lands THERMAL on its third palette
 SENSOR_TIMES = (0, 7.25)
 
 

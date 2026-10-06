@@ -72,7 +72,8 @@ Four instruments share the window, the presets, the keys and the recorder:
 - **Circuit Bender** (`j`): live JPEG databending. Every frame gets a sensor bend, is
   encoded as a real JPEG, has its bytes bent, and is decoded again. It lands on
   *bent cam*: a pink or green cast, slipped bands and posterised bursts, the way a
-  circuit-bent camera looks. `E` steps through the ten bends, `B` sets how hard,
+  circuit-bent camera looks; *thermal*, next, rings every light in thin rainbow
+  contours. `E` steps through the eleven bends, `B` sets how hard,
   `X` split, `C` copy runs, `K` pixel sort, `L` long exposure. Inspired by CyberShot
   Cam by @lixofuturista / @cebolander (independent implementation from the JPEG
   standard). The browser page runs the same bends, byte for byte.
