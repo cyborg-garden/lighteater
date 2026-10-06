@@ -239,6 +239,12 @@ def _palette_lut(name):
     return lut
 
 
+# the alive step's frame-time governor (PhysarumMode._govern): this mode's
+# own ms per frame over GOV_BUDGET_MS for GOV_SLOW_N frames in a row steps
+# down once (ink display off, then the alive step off)
+GOV_BUDGET_MS = 28.0
+GOV_SLOW_N = 90
+
 _LUT_ROWS = {}
 
 
@@ -374,7 +380,9 @@ class PhysarumMode:
         # GPU engine only; alive=False keeps the stock fractal veins there
         self.alive_enabled = bool(alive)
         self._land_wanted = False    # the ink landing, applied on the next step
-        self._ink_landed = None      # (palette idx, fractal) it replaced, until a look
+        self._ink_landed = None      # ((pal, fractal) before, (pal, fractal) set), until a look
+        self._gov_level = 0          # 0 all on, 1 ink off, 2 alive off (_govern)
+        self._gov_slow = 0
         self._grid = tuple(grid) if grid is not None else None
         self._n = n
         self._quality = "perform"
@@ -438,6 +446,7 @@ class PhysarumMode:
             self.mat = make_matte(self.matte_kind)
         self.pf = self._build_field(host)
         self._orbit_t = 0.0          # light back at upper left on every entry
+        self._gov_level, self._gov_slow = 0, 0   # a fresh run, a fresh budget
 
     def _build_field(self, host):
         """The GPU field when it can be had, else the CPU field — sized per
@@ -758,26 +767,34 @@ class PhysarumMode:
     def _land_ink(self, ui):
         self._land_wanted = False
         if (ui is None or self.engine != "gl" or not self.alive_enabled
+                or self._gov_level > 0 or getattr(self.pf, "alive_error", None)
                 or not self.fractal_available() or ALIVE["ink"] < 0
                 or not self._fractal_last > 0.0):
             return
         pal = ALIVE["landing"]["palette"]
         if pal not in self.palettes:
             return
-        self._ink_landed = (getattr(ui, "ph_palette_idx", 0),
-                            float(getattr(ui, "ph_fractal", FRACTAL_DEFAULT)))
+        was = (getattr(ui, "ph_palette_idx", 0),
+               float(getattr(ui, "ph_fractal", FRACTAL_DEFAULT)))
         ui.ph_palette_idx = self.palettes.index(pal)
         ui.ph_fractal = self._fractal_last
+        self._ink_landed = (was, (ui.ph_palette_idx, float(ui.ph_fractal)))
         self._fractal_seen = float(ui.ph_fractal)
 
     def _unland_ink(self, ui, why):
         """An alive failure after the ink landing puts the shared landing
         back (the browser's aliveFail): the palette and the fractal amount
         the look itself carried."""
-        back, self._ink_landed = self._ink_landed, None
-        if ui is not None and back is not None:
-            ui.ph_palette_idx, ui.ph_fractal = back
-            self._fractal_seen = float(ui.ph_fractal)
+        landed, self._ink_landed = self._ink_landed, None
+        if ui is not None and landed is not None:
+            back, now = landed
+            # only what the landing itself set: a palette or amount the
+            # performer changed since stays theirs
+            if getattr(ui, "ph_palette_idx", None) == now[0]:
+                ui.ph_palette_idx = back[0]
+            if float(getattr(ui, "ph_fractal", -1.0)) == now[1]:
+                ui.ph_fractal = back[1]
+                self._fractal_seen = float(ui.ph_fractal)
         if self.host is not None:
             self.host.hud.toasts.flash(f"ink unavailable: {why}"[:80], AMBER)
 
@@ -811,6 +828,17 @@ class PhysarumMode:
 
     # ----- per-frame -----
     def step(self, frame_bgr, audio_levels, dt):
+        """One frame (_step), timed for the alive step's governor."""
+        import time
+        t0 = time.perf_counter()
+        out = self._step(frame_bgr, audio_levels, dt)
+        pf = self.pf
+        alive_on = (self.engine == "gl" and pf is not None
+                    and bool(getattr(pf, "_alive_was", False)))
+        self._govern((time.perf_counter() - t0) * 1000.0, alive_on)
+        return out
+
+    def _step(self, frame_bgr, audio_levels, dt):
         """Matte + luma from the frame, one sim frame, colorize the trail.
 
         The frame is already mirrored by the shell and never None; all float
@@ -1156,8 +1184,8 @@ class PhysarumMode:
             # step): the motion map the browser's motion pass keeps (r the
             # lingering history, g this frame's luma, b the instantaneous
             # deadbanded difference) and the matte, at the scene grid
-            pf.alive = self.alive_enabled
-            if self.alive_enabled and pf.fractal > 0.0:
+            pf.alive = self.alive_enabled and self._gov_level < 2
+            if pf.alive and pf.fractal > 0.0:
                 sw, sh = scene_size(gw, gh)
                 mot = np.dstack([self._motion, luma, motion,
                                  np.ones_like(luma)]).astype(np.float32)
@@ -1184,11 +1212,11 @@ class PhysarumMode:
         pal = self.palettes[int(self._ui("ph_palette_idx", 0)) % len(self.palettes)]
         self.signal_done = False
         # the molten calligraphy (H's third step with the alive step on): its
-        # own display pass, camera ground and all. Before the GPU rack on
-        # purpose: with SIGNAL on, the shell's CPU rack runs over the ink
-        # (signal_done stays False), a slower path but the same picture.
+        # own display pass, camera ground and all, flipped and scaled to the
+        # output on the GPU. With SIGNAL on it feeds the GPU rack directly;
+        # if that rack is unavailable the shell's CPU rack runs over it.
         if (self.engine == "gl" and pal != "video" and self.alive_enabled
-                and pf.alive_display()):
+                and self._gov_level < 1 and pf.alive_display()):
             out = self._step_ink(pf, pal, frame_bgr, rw, rh)
             if out is not None:
                 samp = pf.lum_sample()
@@ -1270,12 +1298,68 @@ class PhysarumMode:
             # the desktop's one video toggle reads as the browser's veil:
             # the feed through the palette, as bright as the mix slider says
             bg = "veil"
-        img = pf.ink_frame(rows, row, cam, bg, mix)
-        if img is None:
+        if self._rack_gl_ok and self.host is not None and bool(self._ui("glitch", False)):
+            out = self._ink_gpu_rack(pf, rows, row, cam, bg, mix, rw, rh)
+            if out is not None:
+                return out
+        img = pf.ink_frame(rows, row, cam, bg, mix, out_size=(rw, rh))
+        return img
+
+    def _ink_gpu_rack(self, pf, rows, row, cam, bg, mix, rw, rh):
+        """SIGNAL over the ink without leaving the GPU: the ink lands in the
+        rack's source texture, the rack runs, one readback at output size.
+        None when the ink did not draw this frame; a GL failure in the rack
+        disables the GPU rack (toasted), as _step_gpu_rack does."""
+        host = self.host
+        try:
+            cb = getattr(host, "cb", None)
+            if cb is None:
+                cb = CircuitBent(seed=getattr(host, "seed", 0))
+                host.cb = cb
+            sync_signal(cb, host.ui, self, rh)
+            with pf.ctx:
+                glout = self._ensure_glout(rw, rh)
+                if pf.ink_frame(rows, row, cam, bg, mix, out_size=(rw, rh),
+                                target=glout.fbo_src) is None:
+                    return None
+                glout.rack.run(cb, cb.plan(rh, rw), glout.tex_src)
+                out = glout.rack.read()
+            self.signal_done = True
+            return out
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as e:               # noqa: BLE001 — §6.4
+            self._rack_gl_ok = False
+            self._glout = None
+            msg = f"GPU rack unavailable, rack running on CPU: {e}"
+            if host is not None:
+                host.hud.toasts.flash(msg[:80], AMBER)
+            print(msg)
             return None
-        if (img.shape[1], img.shape[0]) != (rw, rh):
-            img = cv2.resize(img, (rw, rh), interpolation=cv2.INTER_LINEAR)
-        return np.ascontiguousarray(img)
+
+    # ----- the alive step's frame-time governor -----
+    def _govern(self, cost_ms, alive_on):
+        """The alive step costs the main thread real time (about +6 / +10 ms
+        at 720p / 1080p here, measured; more on a weaker GPU). Its own cost
+        signal is this mode's time inside step() (the camera wait is not in
+        it). After GOV_SLOW_N frames over GOV_BUDGET_MS in a row while the
+        step runs, it steps down once, toasted: first the ink display (the
+        alive picture is colourised like any fractal picture), then the
+        alive step itself. It never steps back up within the mode's run;
+        start() resets it."""
+        if not alive_on or self._gov_level >= 2:
+            self._gov_slow = 0
+            return
+        self._gov_slow = self._gov_slow + 1 if cost_ms > GOV_BUDGET_MS else 0
+        if self._gov_slow < GOV_SLOW_N:
+            return
+        self._gov_slow = 0
+        self._gov_level += 1
+        msg = ("ink off: too slow here, veins kept" if self._gov_level == 1
+               else "alive veins off: too slow here")
+        if self.host is not None:
+            self.host.hud.toasts.flash(msg, AMBER)
+        print(msg, f"({cost_ms:.1f} ms)")
 
     # ----- SIGNAL on the GPU -----
     def _ensure_glout(self, rw, rh):

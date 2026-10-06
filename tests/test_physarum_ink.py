@@ -225,3 +225,123 @@ def test_an_alive_failure_puts_the_shared_landing_back(tmp_path, monkeypatch):
         assert out is not None
     finally:
         m.really_stop()
+
+
+# ----- review round 1: GL errors, the governor, the GPU path ------------------
+
+def test_a_gl_error_in_an_alive_pass_falls_back(monkeypatch):
+    """moderngl raises nothing on an out-of-memory allocation: it only sets
+    the GL error flag. The field reads it after each alive half and the ink,
+    and treats it as a failure."""
+    f = _field()
+    try:
+        f.fractal, f.out_size, f.alive = 1.0, (256, 144), True
+        _ink(f, frames=10)
+        assert f.alive_error is None
+        real = type(f.ctx).error
+        state = {"oom": False}
+
+        def fake(ctx):
+            return "GL_OUT_OF_MEMORY" if state["oom"] else real.fget(ctx)
+        monkeypatch.setattr(type(f.ctx), "error", property(fake))
+        state["oom"] = True
+        assert _ink(f, frames=2) is None
+        assert "GL_OUT_OF_MEMORY" in f.alive_error and f._alive is None
+        state["oom"] = False
+        assert f.luminance().max() > 0               # the stock fractal draws on
+    finally:
+        f.release()
+
+
+def test_the_ink_is_capped_and_flipped_on_the_gpu():
+    import cv2
+    from dtouch.physarum_alive import INK_MAX_PX, ink_size
+    w, h = ink_size(2733, 1537)
+    assert w * h <= INK_MAX_PX * 1.001 and abs(w / h - 2733 / 1537) < 0.01
+    assert ink_size(640, 360) == (640, 360)
+    f = _field()
+    try:
+        f.fractal, f.out_size, f.alive = 1.0, (1920, 1080), True
+        matte, gray = _scene(f)
+        rows = _lut_rows(tuple(PALETTES_PH))
+        img = None
+        for _ in range(30):
+            f.update(matte, gray)
+            img = f.ink_frame(rows, (VIOLET + 0.5) / len(PALETTES_PH), out_size=(1920, 1080))
+        assert img.shape == (1080, 1920, 3)
+        iw, ih = f._alive.ink_out[0].size
+        assert (iw, ih) == ink_size(*f.render_size())
+        # row 0 is the top: the canvas-space ink target, flipped by hand and
+        # scaled on the CPU, matches the GPU blit
+        small = np.empty((ih, iw, 4), np.uint8)
+        with f.ctx:
+            f._alive.ink_out[1].read_into(small, components=4)
+        ref = cv2.resize(small[::-1, :, :3], (1920, 1080), interpolation=cv2.INTER_LINEAR)
+        assert np.abs(ref.astype(int) - img.astype(int)).mean() < 6.0
+        flipped = cv2.resize(small[:, :, :3], (1920, 1080), interpolation=cv2.INTER_LINEAR)
+        assert np.abs(flipped.astype(int) - img.astype(int)).mean() > \
+            np.abs(ref.astype(int) - img.astype(int)).mean()
+    finally:
+        f.release()
+
+
+def test_the_governor_steps_the_ink_then_the_step_down(tmp_path):
+    from dtouch.modes.physarum import GOV_BUDGET_MS, GOV_SLOW_N
+    host, _ = _booted(tmp_path, frames=4)
+    m = host.mode
+    if m.engine != "gl":
+        pytest.skip("no GL context available (CI)")
+    try:
+        for _ in range(GOV_SLOW_N - 1):
+            m._govern(GOV_BUDGET_MS + 5, True)
+        m._govern(GOV_BUDGET_MS - 5, True)          # one fast frame resets the run
+        assert m._gov_level == 0
+        for _ in range(GOV_SLOW_N):
+            m._govern(GOV_BUDGET_MS + 5, True)
+        assert m._gov_level == 1 and "ink off" in host.hud.toasts._center.text
+        frame = np.zeros((108, 192, 3), np.uint8)
+        m.step(frame, None, 1 / 60)
+        assert not m.pf.alive_error and m.pf.alive    # veins kept, ink not drawn
+        for _ in range(GOV_SLOW_N):
+            m._govern(GOV_BUDGET_MS + 5, True)
+        assert m._gov_level == 2
+        m.step(frame, None, 1 / 60)
+        assert m.pf.alive is False
+        # not running the step: slow frames say nothing about it
+        m._gov_level, m._gov_slow = 0, 0
+        for _ in range(GOV_SLOW_N * 2):
+            m._govern(GOV_BUDGET_MS + 5, False)
+        assert m._gov_level == 0
+    finally:
+        m.really_stop()
+
+
+def test_signal_over_the_ink_stays_on_the_gpu(tmp_path):
+    host, _ = _booted(tmp_path, frames=6)
+    m = host.mode
+    if m.engine != "gl":
+        pytest.skip("no GL context available (CI)")
+    try:
+        host.ui.glitch = True
+        frame = np.zeros((108, 192, 3), np.uint8)
+        out = None
+        for _ in range(4):
+            out = m.step(frame, None, 1 / 60)
+        assert m.signal_done and m._rack_gl_ok
+        assert out.shape == (108, 192, 3)
+    finally:
+        m.really_stop()
+
+
+def test_unland_keeps_what_the_performer_changed(tmp_path):
+    host, _ = _booted(tmp_path)
+    ui, m = host.ui, host.mode
+    if m.engine != "gl":
+        pytest.skip("no GL context available (CI)")
+    try:
+        assert m._ink_landed is not None
+        ui.ph_palette_idx = PALETTES_PH.index("toxic")   # the performer's own
+        m._unland_ink(ui, "test")
+        assert PALETTES_PH[ui.ph_palette_idx] == "toxic" and ui.ph_fractal == 0.0
+    finally:
+        m.really_stop()

@@ -459,11 +459,28 @@ class PhysarumFieldGL:
         self._alive = None
         self._alive_was = False
 
-    def _alive_do(self, fn):
+    def _gl_drain(self):
+        """Clear any GL error an earlier, unrelated call left set, so the
+        check after an alive pass reads that pass alone (GL keeps one flag
+        per error kind; a handful of reads empties them)."""
+        for _ in range(8):
+            if self.ctx.error == "GL_NO_ERROR":
+                return
+
+    def _gl_check(self, where):
+        """Raise on a GL error (an out-of-memory allocation or an invalid
+        call raises nothing in moderngl: it only sets the flag)."""
+        err = self.ctx.error
+        if err != "GL_NO_ERROR":
+            raise RuntimeError(f"{where}: {err}")
+
+    def _alive_do(self, fn, where="alive pass"):
         if self._alive is None or not self.alive_on():
             return
         try:
+            self._gl_drain()
             fn(self._alive)
+            self._gl_check(where)
         except Exception as e:                      # noqa: BLE001 — §6.4
             self._alive_fail(e)
 
@@ -476,17 +493,33 @@ class PhysarumFieldGL:
         with self.ctx:            # a first call may build the passes
             return self.alive_on()
 
-    def ink_frame(self, lut_rows, pal_row, video_rgb=None, bg="off", video_mix=0.5):
+    def ink_frame(self, lut_rows, pal_row, video_rgb=None, bg="off", video_mix=0.5,
+                  out_size=None, target=None):
         """One frame's picture in the molten ink: stats, the fractal fields,
-        the alive compose, then ink.frag, read back as (h, w, 3) uint8 RGB
-        at render_size(). None when the trail is empty or an alive pass
-        failed (the host colourises luminance() instead)."""
+        the alive compose, then ink.frag (drawn at most INK_MAX_PX pixels),
+        flipped and upscaled on the GPU to out_size (default render_size()).
+
+        With `target` (an RGBA8 framebuffer of out_size, e.g. the GPU rack's
+        source) the picture lands there and nothing is read back: returns
+        True. Otherwise returns (h, w, 3) uint8 RGB, row 0 at the top. None
+        when the trail is empty or an alive pass failed (the host colourises
+        luminance() instead). Any GL error in the ink counts as a failure."""
         with self.ctx:
             ok = self.luminance_into_tex()
             if not ok or self._alive is None or self._alive.out is None or not self.alive_on():
                 return None
+            ow, oh = out_size or self.render_size()
             try:
-                return self._alive.ink_rgb(lut_rows, pal_row, video_rgb, bg, video_mix)
+                self._gl_drain()
+                A = self._alive
+                A.ink_draw(lut_rows, pal_row, video_rgb, bg, video_mix)
+                if target is not None:
+                    A.ink_blit(target, int(ow), int(oh))
+                    self._gl_check("alive ink")
+                    return True
+                img = A.ink_read(int(ow), int(oh))
+                self._gl_check("alive ink")
+                return img
             except Exception as e:                  # noqa: BLE001 — §6.4
                 self._alive_fail(e)
                 return None
@@ -720,12 +753,20 @@ class PhysarumFieldGL:
             self._alive_was = alive
             adt = min(max(float(self.alive_dt), 0.0), 0.1)
             if alive:
-                self._alive_do(lambda A: A.step_scene(adt))
+                self._alive_do(lambda A: A.step_scene(adt), "alive scene")
 
             a, b = self._points()
-            alive = self._alive is not None and self.alive_on()
-            p = self._alive.prog["update"] if alive else self.p_update
-            vao_update = self._alive.vao["update"] if alive else self.vao_update
+            fa = self._fractal_amount()
+            # pick the program BEFORE any uniform goes on it: the alive
+            # copy's own uniforms first, so a failure there falls back to the
+            # stock program while nothing has been set on either yet
+            p, vao_update = self.p_update, self.vao_update
+            if self._alive is not None and self.alive_on():
+                try:
+                    self._alive.update_uniforms(self._alive.prog["update"], fa)
+                    p, vao_update = self._alive.prog["update"], self._alive.vao["update"]
+                except Exception as e:            # noqa: BLE001 — §6.4
+                    self._alive_fail(e)
             ms, mt, msp = self.mod_sense, self.mod_turn, self.mod_spread
             mst = self.mod_step
             p["u_sense"].value = (a["sense"] * ms, b["sense"] * ms)
@@ -763,7 +804,6 @@ class PhysarumFieldGL:
             # ~0.55 s at 60 fps, then steering is fully back
             self.ballistic *= BALLISTIC_DECAY
             p["u_time"].value = self.frame * (1.0 / 60.0)
-            fa = self._fractal_amount()
             p["u_fractal"].value = fa
             if fa > 0.0:
                 self._update_fractal_uniforms(p, fa)
@@ -780,16 +820,6 @@ class PhysarumFieldGL:
             self.tex_trail_a.use(1)
             self.tex_matte.use(2)
             self.tex_gray.use(3)
-            if alive:
-                try:
-                    self._alive.update_uniforms(p, fa)
-                except Exception as e:            # noqa: BLE001 — §6.4
-                    self._alive_fail(e)
-                    p, vao_update = self.p_update, self.vao_update
-                    p["u_fractal"].value = fa
-                    if fa > 0.0:
-                        self._update_fractal_uniforms(p, fa)
-                    self.fbo_agents_b.use()
             vao_update.render(gl.TRIANGLES, vertices=3)
             if self._alive is not None:
                 self._alive._unbind()
@@ -797,9 +827,9 @@ class PhysarumFieldGL:
 
             md = self.mod_deposit
             self._deposit(a["deposit"] * md, b["deposit"] * md, fa)
-            self._alive_do(lambda A: A.step_life(adt))
+            self._alive_do(lambda A: A.step_life(adt), "alive life")
             self._blur_decay(use_keep=keep is not None, fa=fa)
-            self._alive_do(lambda A: A.step_network(adt))
+            self._alive_do(lambda A: A.step_network(adt), "alive network")
         self.frame += 1
 
     def _update_fractal_uniforms(self, p, fa):
@@ -1030,16 +1060,32 @@ class PhysarumFieldGL:
         # veins, b accents), draws the tips over it, and copies .r into
         # tex_lum_hi so luminance() and the rack read the alive picture
         A = self._alive if (self._alive is not None and self.alive_on()) else None
-        out_fbo = self.fbo_lum_hi
         if A is not None:
             try:
+                self._gl_drain()
                 A.targets()
                 out_fbo = A.out_for(rw, rh)[1]
+                self._compose(A.prog["compose"], A.vao["compose"], out_fbo, fa, rw, rh,
+                              extra=lambda pc: A.compose_uniforms(pc, fa))
+                A._unbind()
+                A.draw_heads()
+                A.copy_luminance(self.fbo_lum_hi)
+                self._gl_check("alive compose")
+                self.lum_tex = self.tex_lum_hi
+                return
             except Exception as e:                  # noqa: BLE001 — §6.4
+                # the alive picture is gone: the stock compose into
+                # tex_lum_hi, this same frame (the fields are already drawn,
+                # so only the compose runs again)
                 self._alive_fail(e)
-                A, out_fbo = None, self.fbo_lum_hi
-        pc = A.prog["compose"] if A is not None else self._pf["compose"]
-        vao_compose = A.vao["compose"] if A is not None else self._pf["vao_compose"]
+        self._compose(self._pf["compose"], self._pf["vao_compose"], self.fbo_lum_hi,
+                      fa, rw, rh)
+        self.lum_tex = self.tex_lum_hi
+
+    def _compose(self, pc, vao, out_fbo, fa, rw, rh, extra=None):
+        """compose.frag (the stock program or the alive copy) into out_fbo.
+        The caller holds the context."""
+        gl, F = self._gl, FRACTAL
         pc["u_outSize"].value = (float(rw), float(rh))
         pc["u_grid"].value = (self.gw, self.gh)
         pc["u_mix"].value = min(1.0, fa / FRACTAL_MIX_FULL)
@@ -1056,22 +1102,9 @@ class PhysarumFieldGL:
         self.tex_fields[0].use(0)
         self.tex_lum.use(1)       # the stock picture (read when u_mix < 1)
         self.tex_fields[1].use(3)
-        if A is not None:
-            try:
-                A.compose_uniforms(pc, fa)
-                vao_compose.render(gl.TRIANGLES, vertices=3)
-                A._unbind()
-                A.draw_heads()
-                A.copy_luminance(self.fbo_lum_hi)
-            except Exception as e:                  # noqa: BLE001 — §6.4
-                # the compose may have drawn into the alive target, which is
-                # gone now: run the stock compose into tex_lum_hi, this frame
-                self._alive_fail(e)
-                self._fractal_picture(fa, norm, gnorm, prev_norm)
-                return
-        else:
-            vao_compose.render(gl.TRIANGLES, vertices=3)
-        self.lum_tex = self.tex_lum_hi
+        if extra is not None:
+            extra(pc)
+        vao.render(gl.TRIANGLES, vertices=3)
 
     def _lum_hi_target(self):
         """The output-size R8 target of the compose pass, (re)allocated when

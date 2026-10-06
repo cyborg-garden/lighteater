@@ -22,10 +22,13 @@ Pass order with the step on (the field drives it):
   update(): scene -> update (alive copy) -> deposit -> life -> blur (alive
   copy) -> events, glow, pulse;  luminance_into_tex(): stats -> fractal
   tonemap -> compose (alive copy, into this module's RGBA16F picture) ->
-  heads -> (.r copied into the field's luminance target);  ink_rgb(): ink.
+  heads -> (.r copied into the field's luminance target);  ink_draw():
+  ink (capped at INK_MAX_PX) -> ink_blit / ink_read: flip + scale on the GPU.
 
-Every GL failure is fail-soft: the field catches it, records alive_error and
-runs the stock fractal step that same frame (the browser's aliveFail).
+Failures are fail-soft: the field catches any exception from an alive pass,
+and checks the GL error flag after each alive half, the compose and the ink
+(an out-of-memory allocation only sets the flag), then records alive_error
+and runs the stock fractal step that same frame (the browser's aliveFail).
 
 Not ported from the browser (yet): the carved composite (carve.frag, the
 look with ALIVE["ink"] < 0 over the camera; here that case colourises the
@@ -69,6 +72,19 @@ PROGRAMS = {
     "ink": ("quad", ("video.glsl", "ink.frag")),
 }
 
+# the ink pass's pixel budget (ink_size): above it the ink draws smaller and
+# the blit upscales it (measured at 4K: 2733x1537 -> ~1 MP saves ~9 ms)
+INK_MAX_PX = 1_000_000
+
+# the ink's flip to image space + bilinear scale (canvas -> rows top-down),
+# desktop only
+_BLIT_FRAG = """#version 330 core
+uniform sampler2D u_src;
+in vec2 v_uv;
+layout(location = 0) out vec4 o;
+void main() { o = vec4(texture(u_src, vec2(v_uv.x, 1.0 - v_uv.y)).rgb, 1.0); }
+"""
+
 # the luminance copy (alive picture .r -> the field's R8 target), desktop only
 _COPY_FRAG = """#version 330 core
 uniform sampler2D u_src;
@@ -85,6 +101,12 @@ def alive_source(*names):
         with open(os.path.join(ALIVE_DIR, name), "r", encoding="utf-8") as fh:
             parts.append("#line 1\n" + fh.read())
     return "".join(parts)
+
+
+def ink_size(w, h, budget=INK_MAX_PX):
+    """The ink pass's size: (w, h), scaled down to `budget` pixels."""
+    k = min(1.0, math.sqrt(budget / max(1.0, float(w) * h)))
+    return max(1, int(round(w * k))), max(1, int(round(h * k)))
 
 
 def scene_size(gw, gh):
@@ -115,6 +137,8 @@ class AliveGL:
                                  if vert == "fs" else ctx.vertex_array(p, []))
             cp = ctx.program(vertex_shader=quad, fragment_shader=_COPY_FRAG)
             self.prog["copy"], self.vao["copy"] = cp, ctx.vertex_array(cp, [])
+            bp = ctx.program(vertex_shader=quad, fragment_shader=_BLIT_FRAG)
+            self.prog["blit"], self.vao["blit"] = bp, ctx.vertex_array(bp, [])
         except Exception:
             self._release_programs()
             raise
@@ -139,6 +163,7 @@ class AliveGL:
         self.fresh = {k: True for k in ("scene", "life", "events", "glow", "pulse")}
         self.out = None           # (tex, fbo): the alive picture, output size
         self.ink_out = None       # (tex, fbo): the ink pass's RGBA8 picture
+        self.blit_out = None      # (tex, fbo): ink_read's output-size RGBA8
         self.tex_motion = self.tex_matte = None
         self.tex_video = None
         self.tex_lut = None
@@ -523,13 +548,15 @@ class AliveGL:
         self.tex_video.write(np.ascontiguousarray(rgb, np.uint8))
         return self.tex_video
 
-    def ink_rgb(self, lut_rows, pal_row, video_rgb=None, bg="off", video_mix=0.5,
-                blackout=False):
-        """The molten calligraphy at the alive picture's size, read back as
-        (h, w, 3) uint8 RGB with row 0 at the top. `pal_row` is the palette's
-        row centre in lut_rows ((index + 0.5) / rows)."""
+    def ink_draw(self, lut_rows, pal_row, video_rgb=None, bg="off", video_mix=0.5,
+                 blackout=False):
+        """The molten calligraphy into ink_out (RGBA8, canvas space: row 0 at
+        the bottom), at the alive picture's size capped at INK_MAX_PX pixels
+        (the strokes are anti-aliased per pixel, so a smaller target is the
+        same picture, softer; ink_blit upscales it). `pal_row` is the
+        palette's row centre in lut_rows ((index + 0.5) / rows)."""
         gl, f = self.mgl, self.f
-        w, h = self.out[0].size
+        w, h = ink_size(*self.out[0].size)
         if self.ink_out is None or self.ink_out[0].size != (w, h):
             self._free(self.ink_out)
             self.ink_out = None
@@ -583,11 +610,28 @@ class AliveGL:
             self._u(p, "u_fxWave", _NO_FX)
             self._u(p, "u_fxAspect", w / max(1.0, float(h)))
         self._draw("ink", self.ink_out[1], setup)
-        out = np.empty((h, w, 4), np.uint8)
-        self.ink_out[1].read_into(out, components=4)
-        # ink.frag draws in canvas space (row 0 at the bottom, it flips the
-        # image-space textures once); the desktop's frames are row 0 at the top
-        return np.ascontiguousarray(out[::-1, :, :3])
+
+    def ink_blit(self, fbo, w, h):
+        """ink_out flipped to image space (row 0 at the top, as the desktop's
+        frames and the GPU rack's source are) and bilinearly scaled into
+        `fbo` (w x h), on the GPU."""
+        fbo.viewport = (0, 0, w, h)
+
+        def setup(p):
+            self._bind(p, 0, self.ink_out[0], self.s_lin, "u_src")
+        self._draw("blit", fbo, setup)
+
+    def ink_read(self, w, h):
+        """The ink at w x h as (h, w, 3) uint8 RGB, row 0 at the top: one
+        GPU blit, one RGB readback, no CPU flip or resize."""
+        if self.blit_out is None or self.blit_out[0].size != (w, h):
+            self._free(self.blit_out)
+            self.blit_out = None
+            self.blit_out = self._target(w, h, comps=4, dtype="f1")
+        self.ink_blit(self.blit_out[1], w, h)
+        out = np.empty((h, w, 3), np.uint8)
+        self.blit_out[1].read_into(out, components=3, alignment=1)
+        return out
 
     def stats(self):
         t = self.sim_t
@@ -609,9 +653,9 @@ class AliveGL:
             for tf in self.pairs[key]:
                 self._free(tf)
         self.pairs.clear()
-        for tf in (self.out, self.ink_out):
+        for tf in (self.out, self.ink_out, self.blit_out):
             self._free(tf)
-        self.out = self.ink_out = None
+        self.out = self.ink_out = self.blit_out = None
         for k in self.fresh:
             self.fresh[k] = True
 
