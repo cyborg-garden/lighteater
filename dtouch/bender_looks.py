@@ -114,7 +114,7 @@ def looks_payload():
         "iconic": S.ICONIC,
         "thermal": {"rings": list(S.THERMAL_RINGS), "shadow": list(S.THERMAL_SHADOW),
                     "grain": S.THERMAL_GRAIN, "noise_hz": S.THERMAL_NOISE_HZ,
-                    "edge": list(S.THERMAL_EDGE),
+                    "edge": list(S.THERMAL_EDGE), "blur": S.THERMAL_BLUR,
                     "palettes": [[list(c) for c in p] for p in S.THERMAL_PALETTES]},
         "streak": {"cast": S.STREAK_CAST, "hz": S.STREAK_HZ, "band": list(S.STREAK_BAND),
                    "p_band": list(S.STREAK_P_BAND), "p_row": list(S.STREAK_P_ROW),

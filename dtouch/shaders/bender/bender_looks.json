@@ -197,6 +197,7 @@
   "grain": 40,
   "noise_hz": 24,
   "edge": [110,3],
+  "blur": 3,
   "palettes": [
    [
     [255,40,200],
