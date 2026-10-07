@@ -554,13 +554,13 @@ def test_the_fold_follows_the_performer_in_the_running_mode(tmp_path):
         m.really_stop()
 
 
-def test_the_autopilot_never_recasts_onto_an_ink_look(tmp_path):
-    """Paper turns the whole frame white: a gesture the performer makes, not
-    one the autopilot springs on a room (the browser's AUTO_LOOKS)."""
+def test_the_autopilot_can_recast_onto_inkblot_and_the_paper_fades_in(tmp_path):
+    """The owner let the autopilot pick inkblot (2026-10-08). It must land
+    there, and the paper must arrive by its fade, never in one frame."""
     host, _ = _booted(tmp_path)
     m = host.mode
     try:
-        assert PhysarumMode.AUTO_SKIP == INK_LOOKS
+        assert PhysarumMode.AUTO_SKIP == ()
         host.auto.on = True
         posted = []
         for _ in range(4000):
@@ -569,6 +569,28 @@ def test_the_autopilot_never_recasts_onto_an_ink_look(tmp_path):
             if host.ui.pending_preset:
                 posted.append(host.ui.pending_preset)
         assert len(set(posted)) >= 3, posted[:10]      # it really re-cast
-        assert "inkblot" not in posted
+        assert "inkblot" in posted, sorted(set(posted))
+        # a re-cast onto inkblot starts the paper from nothing
+        m.ink_paper, m._paper_on, m._paper_amt = False, False, 0.0
+        host._apply_look("inkblot", PhysarumMode.BUILTIN["inkblot"])
+        m.step(np.zeros((108, 192, 3), np.uint8), None, 1 / 60)
+        assert m._paper_amt <= (1 / 60) / ALIVE["style"]["fade"] + 1e-9
+    finally:
+        m.really_stop()
+
+
+def test_an_autopilot_cast_onto_inkblot_cannot_strobe_the_rendered_frame(tmp_path):
+    """The autopilot's cast onto inkblot and back, through the same apply
+    path, keeps the rendered frame under the flash floor."""
+    host, _ = _booted(tmp_path, frames=2)
+    m = host.mode
+    if m.engine != "gl":
+        m.really_stop()
+        pytest.skip("no GL context available (CI)")
+    try:
+        names = ("amoeba", "inkblot")
+        cast = lambda k: host._apply_look(names[k % 2], PhysarumMode.BUILTIN[names[k % 2]])  # noqa: E731
+        lums = _lum_run(host, 240, cast, 30)             # a cast every 0.5 s
+        assert _jumps(lums) <= 2 * 4, _jumps(lums)       # 4 s, at most 2 flashes/s
     finally:
         m.really_stop()
