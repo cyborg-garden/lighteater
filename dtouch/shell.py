@@ -56,6 +56,15 @@ from . import presets as _presets
 BANK_SLOTS = 9
 BANK_SEED_MAX = 7
 
+# Scene keys a held or spammed press could strobe with (look recall 1-9, the
+# setlist's [ and ], physarum's H): one change per SCENE_COOLDOWN_S by the
+# wall clock (waitKey repeats look like presses). The owner's hard floor is
+# 3 flashes a second (WCAG 2.3.1); this holds a key path to 2 changes a
+# second. Panic (0) stays free: it is the way back.
+SCENE_COOLDOWN_S = 0.5
+SCENE_KEY_COMMANDS = tuple(f"preset.recall.{i}" for i in range(1, BANK_SLOTS + 1)) + (
+    "preset.prev", "preset.next", "physarum.depth")
+
 AUTO_RELEASE_KEYS = frozenset(
     [ord(c) for c in "0123456789[],.-=_+xpdoj"]
 )
@@ -746,6 +755,11 @@ class Host:
                            debug_line=self.debug_line,
                            flash_guard=lambda: getattr(self.mode, "flash_guard", None))
         self._register_shell_commands()
+        # held or spammed scene keys: one change per SCENE_COOLDOWN_S
+        for name in SCENE_KEY_COMMANDS:
+            cmd = self.reg.get(name)
+            if cmd is not None:
+                cmd.run = self._scene_gated(cmd.run)
         self.help_rows = self.reg.table() + [("TAB", "Cycle overlay"),
                                              ("Esc", "Step toward hidden")]
 
@@ -809,6 +823,24 @@ class Host:
             self.hud.toasts.hint("auto off - you took over")
         self.overlay = _perform_key(key, self.overlay, self.ps,
                                     self.reg, self.hud)
+
+    def scene_ready(self):
+        """May a scene key (a look, the setlist, H) change the scene now?
+        One change per SCENE_COOLDOWN_S by `scene_clock` (the wall clock;
+        tests set their own); True stamps it."""
+        now = getattr(self, "scene_clock", time.monotonic)()
+        last = getattr(self, "_scene_key_t", None)
+        if last is not None and now - last < SCENE_COOLDOWN_S:
+            self.hud.toasts.hint("one scene change every %.1f s" % SCENE_COOLDOWN_S)
+            return False
+        self._scene_key_t = now
+        return True
+
+    def _scene_gated(self, run):
+        def gated():
+            if self.scene_ready():
+                run()
+        return gated
 
     def _toggle_auto(self):
         on = self.auto.toggle()

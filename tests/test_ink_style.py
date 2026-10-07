@@ -174,28 +174,112 @@ def test_held_or_spammed_k_y_and_blackout_stay_under_three_a_second(tmp_path):
         m.really_stop()
 
 
-def test_looks_and_panic_cannot_strobe_the_paper(tmp_path):
-    """inkblot <-> another look at 30 presses a second: what the paper shows
-    flips at most twice a second and only ever fades."""
+def _lum_run(host, frames, act, every):
+    """Step the running mode `frames` frames at 60 fps, calling act(i) every
+    `every` frames, with the scene clock on the frame clock; return each
+    rendered frame's mean luminance (0..1)."""
+    m = host.mode
+    t = [1000.0]
+    host.scene_clock = lambda: t[0]
+    m._clock = lambda: t[0]
+    frame = np.zeros((108, 192, 3), np.uint8)
+    lums = []
+    for i in range(frames):
+        if i % every == 0:
+            act(i // every)
+        out = m.step(frame, None, 1 / 60)
+        t[0] += 1 / 60
+        o = out.astype(np.float32)
+        lums.append(float((o[..., 0] * 0.2126 + o[..., 1] * 0.7152 + o[..., 2] * 0.0722).mean()) / 255.0)
+    return lums
+
+
+def _jumps(lums, step=0.1):
+    """Frame-to-frame luminance changes over `step` (10% of full range, the
+    WCAG flash threshold); two opposing ones make one flash."""
+    return sum(1 for a, b in zip(lums, lums[1:]) if abs(b - a) > step)
+
+
+def test_rapid_look_switching_cannot_strobe_the_rendered_frame(tmp_path):
+    """inkblot <-> amoeba applied directly (no key gate: the panel, a
+    resume) every 6 and every 12 frames for 3 s: the paper only ever fades,
+    the ink holds through a fade-out, so the rendered frame jumps by more
+    than 10% at most twice a second (the floor is 3 flashes, 6 such jumps, a
+    second). Before the fix the 6-frame run jumped 17 times in 2 s. Faster
+    than that no person reaches: every key path is gated to 2 a second
+    (the test below)."""
     host, _ = _booted(tmp_path, frames=2)
     m = host.mode
     if m.engine != "gl":
         m.really_stop()
         pytest.skip("no GL context available (CI)")
     try:
-        frame = np.zeros((108, 192, 3), np.uint8)
-        on, amts = [], []
-        for i in range(180):                      # 3 s at 60 fps
-            if i % 2 == 0:                         # a look every other frame
-                name = "inkblot" if (i // 2) % 2 == 0 else "amoeba"
-                host._apply_look(name, PhysarumMode.BUILTIN[name])
-            m.step(frame, None, 1 / 60)
-            on.append(m._paper_on)
-            amts.append(m._paper_amt)
-        assert _transitions(on) >= 2
-        assert _transitions(on) / 3.0 <= 2.0 + 1e-9
-        steps = np.abs(np.diff(amts))
-        assert steps.max() <= (1 / 60) / ALIVE["style"]["fade"] + 1e-9   # a fade, never a cut
+        names = ("amoeba", "inkblot")
+        apply = lambda k: host._apply_look(names[k % 2], PhysarumMode.BUILTIN[names[k % 2]])  # noqa: E731
+        host._apply_look("inkblot", PhysarumMode.BUILTIN["inkblot"])
+        _lum_run(host, 60, lambda k: None, 1000)           # settle in the ink
+        for every in (6, 12):
+            lums = _lum_run(host, 180, apply, every)
+            assert _jumps(lums) <= 2 * 3, (every, _jumps(lums))
+    finally:
+        m.really_stop()
+
+
+def test_held_h_and_look_keys_cannot_strobe_the_rendered_frame(tmp_path):
+    """H held (a repeat every 2 frames, 30/s) on veinwork, and 6 / 2 spammed
+    through the bank keys: one scene change per 0.5 s, so at most two >10%
+    jumps a second. Before, a held H jumped 32 times in 2 s."""
+    host, _ = _booted(tmp_path, frames=2)
+    m = host.mode
+    if m.engine != "gl":
+        m.really_stop()
+        pytest.skip("no GL context available (CI)")
+    try:
+        host._wire_keys()
+        assert host.ui.bank.get("6") == "inkblot" and host.ui.bank.get("2") == "amoeba"
+        for start, act in (
+                ("veinwork", lambda k: host.reg.dispatch(ord("h"))),
+                ("inkblot", lambda k: host.reg.dispatch(ord("h"))),
+                ("inkblot", lambda k: host.reg.dispatch(ord("62"[k % 2])))):
+            host._apply_look(start, PhysarumMode.BUILTIN[start])
+            host._apply_pending_preset()
+            _lum_run(host, 40, lambda k: None, 1000)
+            lums = []
+            for _ in range(3):                             # 3 s, 1 s at a time
+                host.ui.pending_preset = None
+                chunk = []
+                for i in range(60):
+                    if i % 2 == 0:
+                        act(i // 2)
+                        host._apply_pending_preset()
+                    chunk += _lum_run(host, 1, lambda k: None, 1000)
+                lums += chunk
+            assert _jumps(lums) <= 2 * 3, (start, _jumps(lums))
+    finally:
+        m.really_stop()
+
+
+def test_scene_keys_take_one_change_per_half_second(tmp_path):
+    from dtouch.shell import SCENE_COOLDOWN_S, SCENE_KEY_COMMANDS
+    host, _ = _booted(tmp_path, frames=2)
+    m = host.mode
+    try:
+        assert SCENE_COOLDOWN_S == 0.5
+        assert "physarum.depth" in SCENE_KEY_COMMANDS and "preset.recall.6" in SCENE_KEY_COMMANDS
+        host._wire_keys()
+        t = [50.0]
+        host.scene_clock = lambda: t[0]
+        seen = []
+        for _ in range(90):                                # 30 presses / s, 3 s
+            t[0] += 1 / 30
+            host.reg.dispatch(ord("h"))
+            seen.append((host.ui.ph_depth, host.ui.ph_fractal))
+        n = _transitions(seen)
+        assert 3 <= n <= 6, n
+        # panic stays free: the way back is never held
+        t[0] += 0.01
+        host.reg.dispatch(ord("0"))
+        assert host.ui.pending_preset == m.safe_look()
     finally:
         m.really_stop()
 

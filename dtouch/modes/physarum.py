@@ -474,6 +474,10 @@ class PhysarumMode:
         self._paper_flip_t = None    # sim time of the last flip
         self._style_key_t = None     # wall time of the last K / Y / blackout
         self._clock = time.monotonic
+        # the ink holds while the paper fades out: the amount it last drew
+        # at, kept on for the fade when the look / H / slider takes it to 0
+        self._ink_fa = 0.0
+        self._ink_wanted = False     # the performer's fractal amount is > 0
 
     # ----- lifecycle -----
     def start(self, host):
@@ -1147,6 +1151,15 @@ class PhysarumMode:
         self._follow_fractal()
         if self.engine == "gl":
             fa = min(max(float(self._ui("ph_fractal", FRACTAL_DEFAULT)), 0.0), 1.0)
+            # the paper never cuts out with the ink: when a look, H, panic or
+            # the slider takes the fractal (and so the ink) away while paper
+            # shows, the ink keeps drawing at its last amount until the
+            # paper has faded out (at most `fade` s), then hands over
+            self._ink_wanted = fa > 0.0
+            if fa > 0.0:
+                self._ink_fa = fa
+            elif self._paper_amt > 0.0 and self._ink_fa > 0.0:
+                fa = self._ink_fa
             amp = float(audio_levels.get("amp", 0.0)) if audio_levels is not None else 0.0
             self._bloom_snd += (amp - self._bloom_snd) * BLOOM["sound_ema"]
             pf.fractal = fa
@@ -1305,9 +1318,12 @@ class PhysarumMode:
                         self._fold = fold_side(self._fold, cx, cy, asp, self._t, self.ink_fold)
             # the paper: a flip (key, look or panic) at most once per
             # cooldown, then a fade, never a cut (the flash floor)
-            if (self.ink_paper != self._paper_on
-                    and style_ready(self._paper_flip_t, self._t)):
-                self._paper_on = self.ink_paper
+            # what it aims at: paper wanted AND the ink wanted on screen
+            # (a look without the fractal, H's flat and depth steps aim it
+            # off, so it fades out under the held ink)
+            want = self.ink_paper and self._ink_wanted
+            if want != self._paper_on and style_ready(self._paper_flip_t, self._t):
+                self._paper_on = want
                 self._paper_flip_t = self._t
             self._paper_amt = paper_step(self._paper_amt, self._paper_on, dt)
             pf.ink_style = (None if not (self._paper_amt > 0.0 or self.ink_fold) else
@@ -1356,6 +1372,10 @@ class PhysarumMode:
                 if samp is not None:
                     self._last_lum = samp
                 return out
+        # the ink did not draw this frame (it stopped, failed, or was never
+        # on): no paper shows, so it starts from 0, and a return fades in
+        # under the cooldown
+        self._paper_amt, self._paper_on = 0.0, False
         # SIGNAL on the GPU (DESIGN.md §2.4; PR #26's measured port list):
         # with the GL engine and the rack ON, tonemap + colorize + upscale +
         # video composite + the whole rack run as fragment passes on the
