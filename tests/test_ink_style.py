@@ -562,10 +562,13 @@ def test_the_autopilot_can_recast_onto_inkblot_and_the_paper_fades_in(tmp_path):
     try:
         assert PhysarumMode.AUTO_SKIP == ()
         host.auto.on = True
+        clock = [1000.0]
+        host.scene_clock = lambda: clock[0]
         posted = []
         for _ in range(4000):
             host.ui.pending_preset = None
             host._auto_tick(0.5)
+            clock[0] += 0.5
             if host.ui.pending_preset:
                 posted.append(host.ui.pending_preset)
         assert len(set(posted)) >= 3, posted[:10]      # it really re-cast
@@ -579,9 +582,32 @@ def test_the_autopilot_can_recast_onto_inkblot_and_the_paper_fades_in(tmp_path):
         m.really_stop()
 
 
+def _bright_lum_run(host, frames, act, every):
+    """_lum_run on a bright camera frame (a lit room), so the paper's swing
+    and any hard cut show in the rendered luminance."""
+    m = host.mode
+    t = [1000.0]
+    host.scene_clock = lambda: t[0]
+    m._clock = lambda: t[0]
+    frame = np.full((108, 192, 3), 200, np.uint8)
+    frame[30:80, 60:130] = 245
+    lums = []
+    for i in range(frames):
+        if i % every == 0:
+            act(i // every)
+        out = m.step(frame, None, 1 / 60)
+        t[0] += 1 / 60
+        o = out.astype(np.float32)
+        lums.append(float((o[..., 0] * 0.2126 + o[..., 1] * 0.7152 + o[..., 2] * 0.0722).mean()) / 255.0)
+    return lums
+
+
 def test_an_autopilot_cast_onto_inkblot_cannot_strobe_the_rendered_frame(tmp_path):
-    """The autopilot's cast onto inkblot and back, through the same apply
-    path, keeps the rendered frame under the flash floor."""
+    """amoeba <-> inkblot at the autopilot's fastest (one cast per budget
+    window, 0.5 s) over a bright camera: at most one jump over 10% per cast.
+    The veil and the look's own change still cut when the look lands (the
+    paper alone fades: the test below), so the budget is what keeps this to
+    2 jumps a second, one flash a second, under the 3 a second floor."""
     host, _ = _booted(tmp_path, frames=2)
     m = host.mode
     if m.engine != "gl":
@@ -590,7 +616,76 @@ def test_an_autopilot_cast_onto_inkblot_cannot_strobe_the_rendered_frame(tmp_pat
     try:
         names = ("amoeba", "inkblot")
         cast = lambda k: host._apply_look(names[k % 2], PhysarumMode.BUILTIN[names[k % 2]])  # noqa: E731
-        lums = _lum_run(host, 240, cast, 30)             # a cast every 0.5 s
-        assert _jumps(lums) <= 2 * 4, _jumps(lums)       # 4 s, at most 2 flashes/s
+        lums = _bright_lum_run(host, 240, cast, 30)      # 8 casts, one every 0.5 s
+        assert _jumps(lums) <= 240 // 30, _jumps(lums)
+        assert max(lums) - min(lums) > 0.1, "the casts really change the picture"
+    finally:
+        m.really_stop()
+
+
+def _paper_only_casts(host):
+    """inkblot with and without its paper, cast every 0.5 s over a dark
+    camera: the paper is the only thing that changes."""
+    ink = PhysarumMode.BUILTIN["inkblot"]
+    looks = (("inkblot-black", dict(ink, ink_paper=False)), ("inkblot", ink))
+    cast = lambda k: host._apply_look(*looks[k % 2])  # noqa: E731
+    cast(0)
+    _lum_run(host, 60, lambda k: None, 1000)              # settle in the ink
+    return _lum_run(host, 240, cast, 30)
+
+
+def test_a_cast_onto_the_paper_fades_it_in(tmp_path):
+    """A cast that turns the paper on or off never jumps the rendered frame
+    by 10% (the fade); the picture still swings a lot over the run."""
+    host, _ = _booted(tmp_path, frames=2)
+    m = host.mode
+    if m.engine != "gl":
+        m.really_stop()
+        pytest.skip("no GL context available (CI)")
+    try:
+        lums = _paper_only_casts(host)
+        assert _jumps(lums) == 0, _jumps(lums)
+        assert max(lums) - min(lums) > 0.15, "the paper really changes the picture"
+    finally:
+        m.really_stop()
+
+
+def test_a_hard_paper_cut_fails_the_fade_check(tmp_path, monkeypatch):
+    """The check above is not vacuous: with the fade forced to one frame the
+    same paper-only casts jump (measured 5 over 8 casts)."""
+    monkeypatch.setitem(ALIVE["style"], "fade", 1e-6)
+    host, _ = _booted(tmp_path, frames=2)
+    m = host.mode
+    if m.engine != "gl":
+        m.really_stop()
+        pytest.skip("no GL context available (CI)")
+    try:
+        assert _jumps(_paper_only_casts(host)) > 0
+    finally:
+        m.really_stop()
+
+
+def test_an_autopilot_recast_takes_the_flash_budget(tmp_path):
+    """A paper press just before a re-cast cannot land two full-frame
+    changes under 0.5 s apart: the re-cast waits (no hint), then lands."""
+    host, _ = _booted(tmp_path)
+    m = host.mode
+    try:
+        clock = [500.0]
+        host.scene_clock = lambda: clock[0]
+        assert host.scene_ready()                  # a person's press
+        clock[0] += 0.2
+        assert host.scene_cast() is False          # the re-cast waits
+        host._auto_cast = (m.id, "inkblot")
+        host.auto.on = True
+        host.ui.pending_preset = None
+        host._auto_tick(0.0)
+        assert host.ui.pending_preset is None      # still inside the window
+        clock[0] += 0.31
+        host._auto_tick(0.0)
+        assert host.ui.pending_preset == "inkblot"  # lands once it frees
+        assert host._auto_cast is None
+        clock[0] += 0.1
+        assert host.scene_cast() is False          # and it stamped the budget
     finally:
         m.really_stop()

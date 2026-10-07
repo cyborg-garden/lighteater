@@ -926,6 +926,21 @@ class Host:
         self._deferred = None
         return True
 
+    def scene_cast(self):
+        """The autopilot's quiet ask of the same budget: a re-cast is a
+        full-frame change, so it lands (and stamps) only when the budget is
+        free, with no hint and no queue; `_auto_tick` keeps it and retries
+        next frame. A person's press and a re-cast never land under
+        SCENE_COOLDOWN_S apart."""
+        if getattr(self, "_scene_grant", False):
+            return True
+        now = getattr(self, "scene_clock", time.monotonic)()
+        last = getattr(self, "_scene_key_t", None)
+        if last is not None and now - last < SCENE_COOLDOWN_S:
+            return False
+        self._scene_key_t = now
+        return True
+
     def flush_deferred(self):
         """Run the latest refused change once the budget frees (one per
         frame, called from the loop). It stamps the budget like any change,
@@ -975,9 +990,15 @@ class Host:
         """
         if not self.auto.on or self.mode is None or self.ui is None:
             return
-        # a mode may keep looks out of the autopilot's pool (physarum's ink
-        # looks: paper turns the whole frame white, the performer's call)
+        # a mode may keep looks out of the autopilot's pool (AUTO_SKIP;
+        # physarum's is empty now: the paper fades and casts take the budget)
         skip = getattr(self.mode, "AUTO_SKIP", ())
+        # a re-cast a press beat to the budget waits here (only the latest)
+        held = getattr(self, "_auto_cast", None)
+        if held is not None and held[0] != self.mode.id:
+            held = self._auto_cast = None
+        if held is not None and self.scene_cast():
+            self.ui.pending_preset, self._auto_cast = held[1], None
         looks = [n for n in self.all_presets.keys() if n not in skip]
         modes = [m.id for m in REGISTRY]
         current = self.ui.preset_name if self.ui.preset_idx < len(
@@ -985,7 +1006,10 @@ class Host:
         for kind, value in self.auto.tick(dt, self.mode.id, looks, modes,
                                           current=current):
             if kind == "preset":
-                self.ui.pending_preset = value
+                if self.scene_cast():
+                    self.ui.pending_preset, self._auto_cast = value, None
+                else:
+                    self._auto_cast = (self.mode.id, value)
             elif kind == "mode":
                 self.pending_mode = value
             elif kind == "command":
