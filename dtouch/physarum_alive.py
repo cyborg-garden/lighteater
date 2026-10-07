@@ -612,7 +612,8 @@ class AliveGL:
             # the style options (the mode's K and Y, a look's ink_paper /
             # ink_fold): none set is the shipped ink, pixel for pixel
             st = getattr(f, "ink_style", None) or {}
-            self._u(p, "u_paper", 1.0 if st.get("paper") else 0.0)
+            # how much the paper shows, 0..1 (the mode fades it)
+            self._u(p, "u_paper", min(max(float(st.get("paper", 0.0)), 0.0), 1.0))
             self._u(p, "u_fold", float(st.get("fold", 0)))
             self._u(p, "u_foldSide", tuple(float(v) for v in st.get("side", FOLD_START[:2])))
             self._u(p, "u_foldAngle", float(st.get("angle", FOLD_START[2])))

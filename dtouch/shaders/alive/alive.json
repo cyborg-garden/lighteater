@@ -168,6 +168,10 @@
    "hold": 2.0,
    "reach": 0.12,
    "angHyst": 0.15
+  },
+  "style": {
+   "cooldown": 0.5,
+   "fade": 0.3
   }
  }
 }

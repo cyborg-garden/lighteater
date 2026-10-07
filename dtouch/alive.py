@@ -110,6 +110,13 @@ ALIVE = {
     # moves again for `hold` seconds, so a side change is one cut, never a
     # flicker.
     "fold": {"hyst": 0.08, "hold": 2.0, "reach": 0.12, "angHyst": 0.15},
+    # F. flash safety for the style options (the owner's hard floor: never
+    # more than 3 flashes a second, WCAG 2.3.1). Paper turns the whole frame
+    # white, so: K, Y and (while paper shows) blackout take at most one
+    # change per `cooldown` s, held or spammed; what the paper shows flips
+    # at most once per `cooldown` s whatever asks (a key, a look, 0), and
+    # then fades over `fade` s instead of cutting.
+    "style": {"cooldown": 0.5, "fade": 0.3},
 }
 
 # The fold amounts Y steps through (0 off), and where a fold starts: the
@@ -124,27 +131,70 @@ def _wrap(a):
     return a - 2.0 * math.pi * math.floor((a + math.pi) / (2.0 * math.pi))
 
 
-def fold_side(state, cx, cy, aspect, now, table=None):
+def _turn(ang, cx, cy, aspect, margin, t):
+    """The 6-fold wedge's centre turned toward the centroid in whole 60
+    degree steps, once it is `reach` out and `margin` rad past the wedge's
+    edge (0: snap to the nearest wedge)."""
+    dx, dy = (cx - 0.5) * aspect, cy - 0.5
+    if math.hypot(dx, dy) > t["reach"]:
+        off = _wrap(math.atan2(dy, dx) - ang)
+        if abs(off) > math.pi / 6 + margin:
+            step = math.pi / 3
+            return _wrap(ang + math.floor(off / step + 0.5) * step)
+    return ang
+
+
+def fold_side(state, cx, cy, aspect, now, fold, table=None):
     """The fold's source as the performer moves: `state` (side x, side y,
     wedge angle, time of the last move or None) after the matte's lit
-    centroid (cx, cy) in image space (0..1, +y down) at time `now` (s).
+    centroid (cx, cy) in image space (0..1, +y down) at time `now` (s), for
+    fold `fold`. Only the axes that fold reads can move (2: x; 4: x and y;
+    6: the wedge), so only a change the picture shows stamps the hold.
     Mirrored by alive-core.js foldSide (tests on both hosts)."""
     t = ALIVE["fold"] if table is None else table
     sx, sy, ang, at = state
     if at is not None and now - at < t["hold"]:
         return state
-    nsx = -1.0 if cx < 0.5 - t["hyst"] else 1.0 if cx > 0.5 + t["hyst"] else sx
-    nsy = -1.0 if cy < 0.5 - t["hyst"] else 1.0 if cy > 0.5 + t["hyst"] else sy
-    nang = ang
-    dx, dy = (cx - 0.5) * aspect, cy - 0.5
-    if math.hypot(dx, dy) > t["reach"]:
-        off = _wrap(math.atan2(dy, dx) - ang)
-        if abs(off) > math.pi / 6 + t["angHyst"]:
-            step = math.pi / 3
-            nang = _wrap(ang + math.floor(off / step + 0.5) * step)
+    nsx, nsy, nang = sx, sy, ang
+    if fold in (2, 4):
+        nsx = -1.0 if cx < 0.5 - t["hyst"] else 1.0 if cx > 0.5 + t["hyst"] else sx
+    if fold == 4:
+        nsy = -1.0 if cy < 0.5 - t["hyst"] else 1.0 if cy > 0.5 + t["hyst"] else sy
+    if fold == 6:
+        nang = _turn(ang, cx, cy, aspect, t["angHyst"], t)
     if nsx == sx and nsy == sy and nang == ang:
         return state
     return (nsx, nsy, nang, now)
+
+
+def fold_snap(state, cx, cy, aspect, now, fold, table=None):
+    """A fold just turned on (or changed): its source goes straight to the
+    side the performer is on (no hysteresis), and the hold starts, so it
+    does not move again at once. alive-core.js foldSnap."""
+    t = ALIVE["fold"] if table is None else table
+    sx, sy, ang, _ = state
+    if fold in (2, 4):
+        sx = -1.0 if cx < 0.5 else 1.0
+    if fold == 4:
+        sy = -1.0 if cy < 0.5 else 1.0
+    if fold == 6:
+        ang = _turn(ang, cx, cy, aspect, 0.0, t)
+    return (sx, sy, ang, now)
+
+
+def style_ready(last, now, table=None):
+    """May a style change (K, Y, blackout over paper, a paper flip) happen
+    at `now` (s), the last one at `last` (None: never)?"""
+    t = ALIVE["style"] if table is None else table
+    return last is None or now - last >= t["cooldown"]
+
+
+def paper_step(amount, on, dt, table=None):
+    """What the paper shows (0..1), one frame on: toward `on` at 1 / fade
+    per second, so a flip is a fade, never a cut. alive-core.js paperStep."""
+    t = ALIVE["style"] if table is None else table
+    d = max(float(dt), 0.0) / max(t["fade"], 1e-6)
+    return min(amount + d, 1.0) if on else max(amount - d, 0.0)
 
 
 def keep_for(half_life, dt):

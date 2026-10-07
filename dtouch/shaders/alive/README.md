@@ -62,4 +62,14 @@ any other look or panic turns them off; the landing never sets them. The
 fold's source half, quadrant or wedge follows the performer (the matte's
 lit centroid) through `dtouch.alive.fold_side` / alive-core.js `foldSide`:
 a hysteresis past the centre lines and a 2 s `hold`, so a side change is one
-cut, never a flicker.
+cut, never a flicker. A fold that just turned on snaps to the performer's
+side (`fold_snap`), and only the axes a fold reads move or stamp the hold.
+Fold 6 keeps the picture's own scale (a pixel inside the source wedge maps
+to itself; past the frame it reads mirrored).
+
+**Flash floor** (`alive.json` `style`; the owner's hard limit, 3 flashes a
+second, WCAG 2.3.1): paper is a white frame, so `u_paper` is 0..1 and the
+host fades it over `fade` (0.3 s); what the paper shows flips at most once
+per `cooldown` (0.5 s) whatever asks (a key, a look, 0); and K, Y and, over
+paper, blackout take one change per cooldown, held or spammed (the web also
+ignores key repeats).

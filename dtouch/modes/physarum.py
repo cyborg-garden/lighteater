@@ -47,10 +47,13 @@ theatrical move the instrument has), and its defaults + built-in looks.
 """
 from __future__ import annotations
 
+import time
+
 import cv2
 import numpy as np
 
-from ..alive import ALIVE, FOLD_START, MIRRORS, fold_side
+from ..alive import (ALIVE, FOLD_START, MIRRORS, fold_side, fold_snap, paper_step,
+                     style_ready)
 from ..circuit_bent import CircuitBent
 from ..commands import Command
 from ..hud import AMBER
@@ -461,6 +464,16 @@ class PhysarumMode:
         self.ink_paper = False
         self.ink_fold = 0
         self._fold = FOLD_START
+        self._fold_fresh = False     # a fold just turned on: snap to the performer
+        # flash safety (ALIVE["style"]): what the paper shows flips at most
+        # once per cooldown (sim clock) whatever asks, and fades over `fade`;
+        # K, Y and blackout over paper take one change per cooldown (wall
+        # clock: the shell's key repeat cannot tell a held key from presses)
+        self._paper_on = False       # what the paper is fading toward
+        self._paper_amt = 0.0        # how much it shows, 0..1
+        self._paper_flip_t = None    # sim time of the last flip
+        self._style_key_t = None     # wall time of the last K / Y / blackout
+        self._clock = time.monotonic
 
     # ----- lifecycle -----
     def start(self, host):
@@ -746,14 +759,21 @@ class PhysarumMode:
 
         def _paper():
             """K: the ink on white paper, and back. A toggle, not a scene
-            change (like H and V), so it leaves AUTO running."""
+            change (like H and V), so it leaves AUTO running. One change
+            per cooldown, held or spammed (the flash floor)."""
+            if not self._style_key():
+                return
             self.ink_paper = not self.ink_paper
             toasts.flash(("INK ON PAPER" if self.ink_paper else "ink on black") + _hint())
 
         def _fold():
-            """Y: the mirror fold, off -> 2 -> 4 -> 6 -> off."""
+            """Y: the mirror fold, off -> 2 -> 4 -> 6 -> off; a new fold
+            snaps to the side the performer is on."""
+            if not self._style_key():
+                return
             self.ink_fold = MIRRORS[(MIRRORS.index(self.ink_fold) + 1) % len(MIRRORS)
                                     if self.ink_fold in MIRRORS else 0]
+            self._fold_fresh = bool(self.ink_fold)
             toasts.flash(("MIRROR %d" % self.ink_fold if self.ink_fold else "mirror off")
                          + _hint())
         return {"physarum.swap": Command("physarum.swap",
@@ -776,6 +796,27 @@ class PhysarumMode:
 
     def safe_look(self):
         return "veinwork"
+
+    def _style_key(self):
+        """K, Y and blackout over paper: one change per cooldown, by the
+        wall clock (a held key repeats faster than any person presses).
+        True when this press may change something, and stamps it."""
+        now = self._clock()
+        if not style_ready(self._style_key_t, now):
+            if self.host is not None:
+                self.host.hud.toasts.hint("one ink change every %.1f s"
+                                          % ALIVE["style"]["cooldown"])
+            return False
+        self._style_key_t = now
+        return True
+
+    def flash_guard(self):
+        """The shell asks before it toggles blackout: over paper (white,
+        showing or fading) a blackout is a full-frame flash, so it takes
+        the style cooldown too. Elsewhere blackout is free."""
+        if not (self.ink_paper or self._paper_on or self._paper_amt > 0.0):
+            return True
+        return self._style_key()
 
     def fractal_available(self):
         """Whether the running engine draws the fractal veins: the GPU
@@ -805,7 +846,10 @@ class PhysarumMode:
         # without it, panic's safe look included, turns both options off
         self.ink_paper = cfg.get("ink_paper") is True
         fold = cfg.get("ink_fold", 0)
-        self.ink_fold = fold if isinstance(fold, int) and fold in MIRRORS else 0
+        fold = fold if isinstance(fold, int) and fold in MIRRORS else 0
+        if fold and fold != self.ink_fold:
+            self._fold_fresh = True
+        self.ink_fold = fold
         # a look of the performer's own: no ink landing to undo or still to do
         self._ink_landed = None
         self._land_wanted = False
@@ -1253,9 +1297,21 @@ class PhysarumMode:
                 if tot > 1e-3:
                     cx = float((self._cx[::4, ::4] * w).sum() / tot + 0.5) / gw
                     cy = float((self._cy[::4, ::4] * w).sum() / tot + 0.5) / gh
-                    self._fold = fold_side(self._fold, cx, cy, rw / max(1.0, float(rh)), self._t)
-            pf.ink_style = (None if not (self.ink_paper or self.ink_fold) else
-                            {"paper": self.ink_paper, "fold": self.ink_fold,
+                    asp = rw / max(1.0, float(rh))
+                    if self._fold_fresh:
+                        self._fold = fold_snap(self._fold, cx, cy, asp, self._t, self.ink_fold)
+                        self._fold_fresh = False
+                    else:
+                        self._fold = fold_side(self._fold, cx, cy, asp, self._t, self.ink_fold)
+            # the paper: a flip (key, look or panic) at most once per
+            # cooldown, then a fade, never a cut (the flash floor)
+            if (self.ink_paper != self._paper_on
+                    and style_ready(self._paper_flip_t, self._t)):
+                self._paper_on = self.ink_paper
+                self._paper_flip_t = self._t
+            self._paper_amt = paper_step(self._paper_amt, self._paper_on, dt)
+            pf.ink_style = (None if not (self._paper_amt > 0.0 or self.ink_fold) else
+                            {"paper": self._paper_amt, "fold": self.ink_fold,
                              "side": self._fold[:2], "angle": self._fold[2]})
             # the alive fractal step's inputs (it runs only on H's third
             # step): the motion map the browser's motion pass keeps (r the

@@ -15,7 +15,8 @@ import os
 import numpy as np
 import pytest
 
-from dtouch.alive import ALIVE, FOLD_START, MIRRORS, fold_side
+from dtouch.alive import (ALIVE, FOLD_START, MIRRORS, fold_side, fold_snap,
+                          paper_step, style_ready)
 from dtouch.modes.physarum import INK_LOOKS, LOOK_FRACTAL, PALETTES_PH, PhysarumMode
 from dtouch.physarum_alive import GLSL_VERSION_LINE, alive_source
 from dtouch.shell import AUTO_RELEASE_KEYS
@@ -36,69 +37,188 @@ def test_fold_starts_left_top_up_and_unmoved():
 
 def test_fold_side_moves_only_past_the_hysteresis():
     s = FOLD_START
-    # inside the dead band either side of the centre lines: the sides stay
-    # (the 6-fold wedge has its own rule, below)
-    assert fold_side(s, 0.5, 0.5, 16 / 9, 10.0) is s
+    assert fold_side(s, 0.5, 0.5, 16 / 9, 10.0, 4) is s
     for cx, cy in ((0.5 + T["hyst"] * 0.9, 0.5 - T["hyst"] * 0.9),
                    (0.5 - T["hyst"] * 0.9, 0.5 + T["hyst"] * 0.9)):
-        assert fold_side(s, cx, cy, 16 / 9, 10.0)[:2] == s[:2]
+        assert fold_side(s, cx, cy, 16 / 9, 10.0, 4) is s
     # well right and below: both axes flip, stamped with the time
-    s2 = fold_side(s, 0.9, 0.9, 16 / 9, 10.0)
+    s2 = fold_side(s, 0.9, 0.9, 16 / 9, 10.0, 4)
     assert s2[:2] == (1.0, 1.0) and s2[3] == 10.0
 
 
+def test_only_the_axes_a_fold_reads_move_and_stamp():
+    s = FOLD_START
+    # fold 2 reads x only: a performer low in the frame or round the side
+    # moves neither y nor the wedge, and stamps no hold
+    assert fold_side(s, 0.5, 0.95, 1.0, 10.0, 2) is s
+    s2 = fold_side(s, 0.9, 0.95, 1.0, 10.0, 2)
+    assert s2[0] == 1.0 and s2[1] == s[1] and s2[2] == s[2]
+    # fold 6 reads the wedge only
+    s3 = fold_side(s, 0.9, 0.5, 1.0, 10.0, 6)
+    assert s3[:2] == s[:2] and s3[2] != s[2]
+
+
 def test_fold_side_holds_after_a_move():
-    s = fold_side(FOLD_START, 0.9, 0.5, 16 / 9, 10.0)
+    s = fold_side(FOLD_START, 0.9, 0.5, 16 / 9, 10.0, 2)
     assert s[0] == 1.0
-    # back to the left inside the hold: kept, so a side change is one cut
-    assert fold_side(s, 0.1, 0.5, 16 / 9, 10.0 + T["hold"] * 0.9) is s
-    s3 = fold_side(s, 0.1, 0.5, 16 / 9, 10.0 + T["hold"] * 1.1)
-    assert s3[0] == -1.0
+    assert fold_side(s, 0.1, 0.5, 16 / 9, 10.0 + T["hold"] * 0.9, 2) is s
+    assert fold_side(s, 0.1, 0.5, 16 / 9, 10.0 + T["hold"] * 1.1, 2)[0] == -1.0
 
 
 def test_fold_side_never_flips_faster_than_the_hold():
-    """A performer standing on the centre line and jittering across it
-    cannot strobe the fold: over 60 s of 60 fps jitter it moves at most once
-    per hold (the flash limit is 3 a second; this is one per 2 s at most)."""
+    """60 s of 60 fps centroid jitter across the centre lines: the fold
+    moves, but never twice inside the hold (well under the 3 a second
+    floor)."""
     rng = np.random.default_rng(1)
-    s, moves = FOLD_START, []
-    for i in range(3600):
-        t = i / 60.0
-        cx = 0.5 + rng.uniform(-0.3, 0.3)
-        n = fold_side(s, cx, 0.5, 16 / 9, t)
-        if n is not s:
-            moves.append(t)
-        s = n
-    assert moves, "jitter that far past the band must move it sometimes"
-    gaps = np.diff(moves)
-    assert len(gaps) == 0 or gaps.min() >= T["hold"]
+    for fold in (2, 4, 6):
+        s, moves = FOLD_START, []
+        for i in range(3600):
+            t = i / 60.0
+            n = fold_side(s, 0.5 + rng.uniform(-0.3, 0.3), 0.5 + rng.uniform(-0.3, 0.3),
+                          16 / 9, t, fold)
+            if n is not s:
+                moves.append(t)
+            s = n
+        assert moves, fold
+        assert len(moves) < 2 or np.diff(moves).min() >= T["hold"], fold
 
 
 def test_fold_six_turns_toward_the_performer_in_sixty_degree_steps():
     s = FOLD_START                                   # wedge up (-pi/2)
-    # straight below the centre: the wedge turns to point down (+pi/2)
-    s2 = fold_side(s, 0.5, 0.95, 1.0, 5.0)
-    assert math.isclose(s2[2], math.pi / 2, abs_tol=1e-9) or \
-        math.isclose(s2[2], -math.pi / 2 + math.pi, abs_tol=1e-9)
-    # a step is always a whole number of 60 degree turns from the start
+    s2 = fold_side(s, 0.5, 0.95, 1.0, 5.0, 6)        # straight below: down
+    assert math.isclose(s2[2], math.pi / 2, abs_tol=1e-9)
     k = (s2[2] - s[2]) / (math.pi / 3)
     assert math.isclose(k, round(k), abs_tol=1e-9)
-    # near the centre (inside `reach`), no turn
-    s3 = fold_side(s, 0.5, 0.5 + T["reach"] * 0.5, 1.0, 5.0)
-    assert s3[2] == s[2]
-    # inside the current wedge plus its margin: no turn either
+    assert fold_side(s, 0.5, 0.5 + T["reach"] * 0.5, 1.0, 5.0, 6)[2] == s[2]
     a = s[2] + (math.pi / 6) * 0.9
-    s4 = fold_side(s, 0.5 + 0.4 * math.cos(a), 0.5 + 0.4 * math.sin(a), 1.0, 5.0)
-    assert s4[2] == s[2]
+    assert fold_side(s, 0.5 + 0.4 * math.cos(a), 0.5 + 0.4 * math.sin(a), 1.0, 5.0, 6)[2] == s[2]
 
 
 def test_fold_angles_stay_wrapped():
-    s = FOLD_START
-    t = 0.0
+    s, t = FOLD_START, 0.0
     for a in np.linspace(0, 6 * math.pi, 40):
         t += T["hold"] + 0.1
-        s = fold_side(s, 0.5 + 0.45 * math.cos(a), 0.5 + 0.45 * math.sin(a), 1.0, t)
+        s = fold_side(s, 0.5 + 0.45 * math.cos(a), 0.5 + 0.45 * math.sin(a), 1.0, t, 6)
         assert -math.pi <= s[2] < math.pi
+
+
+def test_a_new_fold_snaps_to_the_performer_and_starts_the_hold():
+    # just past the centre (inside the hysteresis band): fold_side would
+    # keep the old side, a fresh fold goes straight to the performer's
+    s = fold_snap(FOLD_START, 0.53, 0.47, 16 / 9, 3.0, 2)
+    assert s[0] == 1.0 and s[3] == 3.0
+    assert fold_side(s, 0.1, 0.5, 16 / 9, 3.5, 2) is s        # held
+    s4 = fold_snap(FOLD_START, 0.2, 0.8, 16 / 9, 3.0, 4)
+    assert s4[:2] == (-1.0, 1.0)
+    s6 = fold_snap(FOLD_START, 0.5, 0.9, 1.0, 3.0, 6)
+    assert math.isclose(s6[2], math.pi / 2, abs_tol=1e-9)
+
+
+# ---------- flash safety: the 3 a second floor ----------
+
+def test_the_paper_fades_and_flips_at_most_once_per_cooldown():
+    st = ALIVE["style"]
+    assert st == {"cooldown": 0.5, "fade": 0.3}
+    a, frames = 0.0, 0
+    while a < 1.0:
+        a = paper_step(a, True, 1 / 60)
+        frames += 1
+    assert frames == math.ceil(st["fade"] * 60)                # ~300 ms, not a cut
+    assert paper_step(1.0, False, 1 / 60) == pytest.approx(1 - 1 / 60 / st["fade"])
+    assert style_ready(None, 0.0) and not style_ready(1.0, 1.4) and style_ready(1.0, 1.5)
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 100.0
+
+    def __call__(self):
+        return self.t
+
+
+def _transitions(xs):
+    return sum(1 for a, b in zip(xs, xs[1:]) if a != b)
+
+
+def test_held_or_spammed_k_y_and_blackout_stay_under_three_a_second(tmp_path):
+    """A held key repeats at 30/s on the desktop (waitKey cannot tell repeats
+    from presses): K, Y and, over paper, blackout change at most twice a
+    second. Off paper, blackout stays free."""
+    host, _ = _booted(tmp_path)
+    m = host.mode
+    try:
+        clock = _Clock()
+        m._clock = clock
+        host._wire_keys()
+        space = ord(" ")
+        for key, read in ((ord("k"), lambda: m.ink_paper),
+                          (ord("y"), lambda: m.ink_fold),
+                          (space, lambda: host.ps.blackout)):
+            if key == space:
+                m.ink_paper = True               # blackout over paper
+            seen = [read()]
+            for _ in range(90):                  # 3 s at 30 presses / s
+                clock.t += 1 / 30
+                host.reg.dispatch(key)
+                seen.append(read())
+            n = _transitions(seen)
+            assert 3 <= n and n / 3.0 <= 2.0 + 1e-9, (chr(key), n)
+        # off paper, blackout is a black frame over a black ground: free
+        m.ink_paper, m._paper_on, m._paper_amt = False, False, 0.0
+        host.ps.blackout = False
+        for _ in range(10):
+            clock.t += 1 / 30
+            host.reg.dispatch(space)
+        assert host.ps.blackout is False          # 10 toggles, all taken
+    finally:
+        m.really_stop()
+
+
+def test_looks_and_panic_cannot_strobe_the_paper(tmp_path):
+    """inkblot <-> another look at 30 presses a second: what the paper shows
+    flips at most twice a second and only ever fades."""
+    host, _ = _booted(tmp_path, frames=2)
+    m = host.mode
+    if m.engine != "gl":
+        m.really_stop()
+        pytest.skip("no GL context available (CI)")
+    try:
+        frame = np.zeros((108, 192, 3), np.uint8)
+        on, amts = [], []
+        for i in range(180):                      # 3 s at 60 fps
+            if i % 2 == 0:                         # a look every other frame
+                name = "inkblot" if (i // 2) % 2 == 0 else "amoeba"
+                host._apply_look(name, PhysarumMode.BUILTIN[name])
+            m.step(frame, None, 1 / 60)
+            on.append(m._paper_on)
+            amts.append(m._paper_amt)
+        assert _transitions(on) >= 2
+        assert _transitions(on) / 3.0 <= 2.0 + 1e-9
+        steps = np.abs(np.diff(amts))
+        assert steps.max() <= (1 / 60) / ALIVE["style"]["fade"] + 1e-9   # a fade, never a cut
+    finally:
+        m.really_stop()
+
+
+def test_resuming_into_inkblot_fades_the_paper_in(tmp_path):
+    """A crash-resume (or any boot) straight into inkblot starts the paper
+    at 0 and fades it in: no white frame on the first frame."""
+    host, _ = _booted(tmp_path, frames=2)
+    m = host.mode
+    if m.engine != "gl":
+        m.really_stop()
+        pytest.skip("no GL context available (CI)")
+    try:
+        assert m._paper_amt == 0.0
+        host._apply_look("inkblot", PhysarumMode.BUILTIN["inkblot"])
+        frame = np.zeros((108, 192, 3), np.uint8)
+        m.step(frame, None, 1 / 60)
+        assert 0.0 < m._paper_amt <= (1 / 60) / ALIVE["style"]["fade"] + 1e-9
+        for _ in range(30):
+            m.step(frame, None, 1 / 60)
+        assert m._paper_amt == 1.0
+    finally:
+        m.really_stop()
 
 
 # ---------- the shader: off is the shipped ink ----------
@@ -124,7 +244,8 @@ def _draw(f, rows):
     A = f._alive
     with f.ctx:
         A.ink_draw(rows, (VIOLET + 0.5) / len(PALETTES_PH))
-        return np.frombuffer(A.ink_out[0].read(), np.uint8).copy()
+        w, h = A.ink_out[0].size
+        return np.frombuffer(A.ink_out[0].read(), np.uint8).reshape(h, w, 4)[..., :3].copy()
 
 
 def test_off_is_the_shipped_ink_pixel_for_pixel():
@@ -155,6 +276,62 @@ def test_off_is_the_shipped_ink_pixel_for_pixel():
 def _paperish(img):
     """Share of light, near-neutral pixels: paper, not the molten glow."""
     return float(((img.min(2) > 150) & ((img.max(2) - img.min(2)) < 30)).mean())
+
+
+def test_the_paper_fade_changes_the_frame_smoothly():
+    """Frame by frame at 60 fps, a paper flip moves the picture's mean
+    luminance by a small step (no frame jumps by 10% of full range, the
+    WCAG flash threshold), and the whole fade does change it a lot."""
+    f = _field()
+    try:
+        f.fractal, f.out_size, f.alive = 1.0, (256, 144), True
+        rows = _lut_rows(tuple(PALETTES_PH))
+        _ink(f, frames=40)
+        _frame(f, rows)
+        lum, a = [], 0.0
+        for on in [True] * 30 + [False] * 30:
+            a = paper_step(a, on, 1 / 60)
+            f.ink_style = {"paper": a, "fold": 0}
+            img = _draw(f, rows).astype(np.float32)
+            lum.append(float((img[..., 0] * 0.2126 + img[..., 1] * 0.7152
+                              + img[..., 2] * 0.0722).mean()) / 255.0)
+        steps = np.abs(np.diff(lum))
+        assert max(lum) - min(lum) > 0.1, "the fade really moves the picture"
+        assert steps.max() < 0.1, steps.max()
+    finally:
+        f.release()
+
+
+def test_fold_six_keeps_the_picture_s_own_scale():
+    """A pixel inside the 6-fold's source wedge maps to itself (no zoom), so
+    the wedge's content is the unfolded picture there."""
+    f = _field()
+    try:
+        f.fractal, f.out_size, f.alive = 1.0, (256, 144), True
+        rows = _lut_rows(tuple(PALETTES_PH))
+        _ink(f, frames=40)
+        _frame(f, rows)
+        f.ink_style = None
+        plain = _draw(f, rows)
+        f.ink_style = {"fold": 6, "side": (-1.0, -1.0), "angle": -math.pi / 2}
+        six = _draw(f, rows)
+        h, w = plain.shape[:2]
+        yy, xx = np.mgrid[0:h, 0:w]
+        # canvas rows run bottom-up; image space is +y down from the top
+        u = (xx + 0.5) / w
+        v = 1.0 - (yy + 0.5) / h
+        px, py = (u - 0.5) * (w / h), v - 0.5
+        ang = np.arctan2(py, px)
+        inside = (np.abs(ang - (-math.pi / 2)) < (math.pi / 6) * 0.7) & (np.hypot(px, py) > 0.06) \
+            & (np.hypot(px, py) < 0.45)
+        assert inside.sum() > 200
+        d = np.abs(plain.astype(np.int16) - six.astype(np.int16))[inside]
+        assert d.mean() < 1.0 and np.percentile(d, 99) <= 6, (d.mean(), np.percentile(d, 99))
+        # and outside the wedge it is folded, not the plain picture
+        out = ~inside & (np.hypot(px, py) > 0.1)
+        assert np.abs(plain.astype(np.int16) - six.astype(np.int16))[out].mean() > 5.0
+    finally:
+        f.release()
 
 
 def test_paper_is_light_and_the_folds_are_mirrors():
@@ -213,10 +390,13 @@ def test_k_and_y_are_free_and_leave_auto_running(tmp_path):
         for k in ("k", "y"):
             assert ord(k) not in AUTO_RELEASE_KEYS
         assert not m.ink_paper and m.ink_fold == 0
+        clock = _Clock()
+        m._clock = clock
         host.reg.dispatch(ord("k"))
         assert m.ink_paper
         seen = []
         for _ in range(4):
+            clock.t += ALIVE["style"]["cooldown"] + 0.01   # presses a person makes
             host.reg.dispatch(ord("y"))
             seen.append(m.ink_fold)
         assert seen == [2, 4, 6, 0]

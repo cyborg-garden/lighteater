@@ -126,7 +126,8 @@ def _register_quit(reg, ps, toasts):
 
 
 def _wire_perform_keys(reg, ui, hud, ps, recall, mode_commands=None,
-                       safe_look=None, get_overlay=None, debug_line=None):
+                       safe_look=None, get_overlay=None, debug_line=None,
+                       flash_guard=None):
     """Register the perform layer (DESIGN.md §6.2) on `reg`.
 
     `recall(name)` must route a preset apply through the same path a panel click
@@ -174,6 +175,11 @@ def _wire_perform_keys(reg, ui, hud, ps, recall, mode_commands=None,
         toasts.flash(f"{slot} - {name}" if slot else name)
 
     def blackout():
+        # a mode may hold a blackout back (physarum over paper: a white frame
+        # cut to black is a full-frame flash, so it takes a cooldown)
+        guard = flash_guard() if flash_guard is not None else None
+        if guard is not None and not guard():
+            return
         ps.blackout = not ps.blackout
         if ps.blackout:
             toasts.flash("BLACKOUT", AMBER)
@@ -737,7 +743,8 @@ class Host:
                            mode_commands=self.mode.commands(),
                            safe_look=lambda: self.mode.safe_look(),
                            get_overlay=lambda: self.overlay,
-                           debug_line=self.debug_line)
+                           debug_line=self.debug_line,
+                           flash_guard=lambda: getattr(self.mode, "flash_guard", None))
         self._register_shell_commands()
         self.help_rows = self.reg.table() + [("TAB", "Cycle overlay"),
                                              ("Esc", "Step toward hidden")]
