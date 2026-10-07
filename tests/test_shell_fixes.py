@@ -1858,8 +1858,10 @@ def test_collapsing_the_panel_cancels_the_rename_that_would_eat_every_key(tmp_pa
     assert host.menu.open is True
     t[0] += 0.6          # a person's pause: m and Esc share the menu's gate
     _present(host, 27)                               # Esc closes the menu
+    t[0] += 0.6          # help opening and closing share the same budget
     _present(host, ord("?"))
     assert host.ps.help_open is True
+    t[0] += 0.6
     _present(host, ord("?"))                         # any key closes help
     _present(host, ord("q"))
     _present(host, ord("q"))

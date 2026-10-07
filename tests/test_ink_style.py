@@ -267,12 +267,12 @@ def test_held_h_and_look_keys_cannot_strobe_the_rendered_frame(tmp_path):
 
 
 def test_scene_keys_take_one_change_per_half_second(tmp_path):
-    from dtouch.shell import SCENE_COOLDOWN_S, SCENE_KEY_COMMANDS
+    from dtouch.shell import FREE_COMMANDS, SCENE_COOLDOWN_S
     host, _ = _booted(tmp_path, frames=2)
     m = host.mode
     try:
         assert SCENE_COOLDOWN_S == 0.5
-        assert "physarum.depth" in SCENE_KEY_COMMANDS and "preset.recall.6" in SCENE_KEY_COMMANDS
+        assert "physarum.depth" not in FREE_COMMANDS and "preset.recall.6" not in FREE_COMMANDS
         host._wire_keys()
         t = [50.0]
         host.scene_clock = lambda: t[0]
@@ -483,6 +483,7 @@ def test_k_and_y_are_free_and_leave_auto_running(tmp_path):
         assert not m.ink_paper and m.ink_fold == 0
         clock = _Clock()
         m._clock = clock
+        host.scene_clock = clock          # K and Y take the shell's shared budget
         host.reg.dispatch(ord("k"))
         assert m.ink_paper
         seen = []

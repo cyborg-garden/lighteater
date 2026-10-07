@@ -802,9 +802,15 @@ class PhysarumMode:
         return "veinwork"
 
     def _style_key(self):
-        """K, Y and blackout over paper: one change per cooldown, by the
-        wall clock (a held key repeats faster than any person presses).
-        True when this press may change something, and stamps it."""
+        """K and Y: one change per cooldown, by the wall clock (a held key
+        repeats faster than any person presses). Under a shell this is the
+        shell's ONE flash budget (shared with looks, H, the menu, blackout
+        OFF), so two keys cannot add up past the floor; standalone (tests,
+        no host) it keeps its own stamp. True when this press may change
+        something, and stamps it."""
+        ready = getattr(self.host, "scene_ready", None) if self.host is not None else None
+        if callable(ready):
+            return bool(ready())
         now = self._clock()
         if not style_ready(self._style_key_t, now):
             if self.host is not None:
@@ -813,15 +819,6 @@ class PhysarumMode:
             return False
         self._style_key_t = now
         return True
-
-    def flash_guard(self):
-        """The shell asks before it turns blackout OFF (ON is always
-        allowed, a safety cut): over paper (white, showing or fading) the
-        return to white is a full-frame flash, so it takes the style
-        cooldown too, on top of the shell's own blackout hold."""
-        if not (self.ink_paper or self._paper_on or self._paper_amt > 0.0):
-            return True
-        return self._style_key()
 
     def fractal_available(self):
         """Whether the running engine draws the fractal veins: the GPU

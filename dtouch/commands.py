@@ -91,6 +91,10 @@ class CommandRegistry:
             self.on_unknown(keycode)
         return False
 
+    def commands(self):
+        """Every registered command, in registration order."""
+        return list(self._by_name.values())
+
     def table(self):
         """(key, label) rows for the help overlay, in registration order."""
         return [(c.key, c.label) for c in self._by_name.values() if c.key is not None]
