@@ -79,7 +79,8 @@ FREE_COMMANDS = frozenset({
     # agents poured in over seconds, not a cut
     "physarum.burst", "physarum.wave", "layer.flock",
 })
-SCENE_HINT = "one change every half second"
+SCENE_HINT = "one change every half second - yours lands next"
+SCENE_HINT_DROP = "one change every half second"
 
 AUTO_RELEASE_KEYS = frozenset(
     [ord(c) for c in "0123456789[],.-=_+xpdoj"]
@@ -351,7 +352,7 @@ def _wire_perform_keys(reg, ui, hud, ps, recall, mode_commands=None,
         if isinstance(w, Cycle):
             # a Cycle row switches the whole picture (matte, algorithm,
             # palette): one change per budget, held or spammed
-            if budget is not None and not budget():
+            if budget is not None and not budget(defer=lambda: nudge(d, big)):
                 _osd_show(w)
                 return
             opts = list(w.options)
@@ -431,7 +432,7 @@ def _perform_key(key, overlay, ps, reg, hud, budget=None):
     shared flash budget (`budget`); a refused close keeps the key eaten.
     """
     if ps.help_open:
-        if budget is None or budget():
+        if budget is None or budget(defer=lambda: setattr(ps, "help_open", False)):
             ps.help_open = False
         return overlay
     overlay, handled = _overlay_key(key, overlay, hud.toasts)
@@ -824,7 +825,8 @@ class Host:
         eats clicks (a card commits a switch); otherwise the panel gets the
         event."""
         if self.ps.help_open:
-            if event == cv2.EVENT_LBUTTONDOWN and self.scene_ready():
+            if event == cv2.EVENT_LBUTTONDOWN and self.scene_ready(
+                    defer=lambda: setattr(self.ps, "help_open", False)):
                 self.ps.help_open = False
             return
         if self.menu.open:
@@ -856,7 +858,8 @@ class Host:
         if self.menu.open:
             # m / Esc close the menu: the same gate that opened it, so a held
             # m cannot flicker the dimmed frame (flash guards)
-            if key in (ord("m"), ord("M"), 27) and not self.scene_ready():
+            if key in (ord("m"), ord("M"), 27) and not self.scene_ready(
+                    defer=lambda k=key: self.menu.open and self._route_key(k)):
                 return
             from_boot = self.menu.boot         # a commit closes and clears it
             action, mode_id = self.menu.key(key)
@@ -892,36 +895,68 @@ class Host:
             st = self.__dict__["_flash_state_d"] = {}
         return st
 
-    def scene_ready(self, force=False):
+    def scene_ready(self, force=False, defer=None):
         """May a full-frame change happen now? ONE budget for every key and
-        path (looks, H, menu, help, swap, ink, Cycle rows, blackout OFF):
-        one change per SCENE_COOLDOWN_S by `scene_clock` (the wall clock;
-        tests set their own). True stamps it. Inside a gated command's run
-        the grant holds, so a command that asks again (physarum's K and Y)
+        path (looks, H, menu, help, swap, ink, Cycle rows, panel clicks,
+        blackout OFF): one change per SCENE_COOLDOWN_S by `scene_clock`
+        (the wall clock; tests set their own). True stamps it. Inside a
+        gated command's run the grant holds, so a command that asks again
         is not refused by its own stamp. `force` stamps without asking
-        (panic, a menu commit: they always run, and the next change waits)."""
+        (panic, a menu commit: they always run, and the next change waits).
+
+        A refused change is not lost: `defer` (a callable) is kept, only the
+        latest one, and `flush_deferred` runs it when the budget frees, so
+        a quick card-then-look lands half a second later instead of never."""
         now = getattr(self, "scene_clock", time.monotonic)()
         if force:
             self._scene_key_t = now
+            self._deferred = None        # a reset or a pick wins over a queued change
             return True
         if getattr(self, "_scene_grant", False):
             return True
         last = getattr(self, "_scene_key_t", None)
         if last is not None and now - last < SCENE_COOLDOWN_S:
-            self.hud.toasts.hint(SCENE_HINT)
+            if defer is not None:
+                self._deferred = defer
+                self.hud.toasts.hint(SCENE_HINT)
+            else:
+                self.hud.toasts.hint(SCENE_HINT_DROP)
             return False
         self._scene_key_t = now
+        self._deferred = None
+        return True
+
+    def flush_deferred(self):
+        """Run the latest refused change once the budget frees (one per
+        frame, called from the loop). It stamps the budget like any change,
+        so the rate stays at one per SCENE_COOLDOWN_S."""
+        run = getattr(self, "_deferred", None)
+        if run is None:
+            return False
+        now = getattr(self, "scene_clock", time.monotonic)()
+        last = getattr(self, "_scene_key_t", None)
+        if last is not None and now - last < SCENE_COOLDOWN_S:
+            return False
+        self._deferred = None
+        self._scene_key_t = now
+        self._scene_grant = True
+        try:
+            run()
+        finally:
+            self._scene_grant = False
         return True
 
     def _scene_gated(self, run):
-        def gated():
-            if not self.scene_ready():
-                return
+        def granted():
             self._scene_grant = True
             try:
                 run()
             finally:
                 self._scene_grant = False
+
+        def gated():
+            if self.scene_ready(defer=run):
+                granted()
         gated._scene_gated = True
         return gated
 
@@ -1639,6 +1674,9 @@ class Host:
                                  matte=getattr(mode, "matte_kind", mattes[0]),
                                  palette=boot_palette)
         ui.accent = mode.accent
+        # panel clicks that switch the whole picture take the shared flash
+        # budget too (overlay_ui._activate)
+        ui.scene_budget = self.scene_ready
         ui.panel_title = "lighteater - " + mode.title.upper()
         ui.set_spec(self.compose_spec(mode))
         ui.mirror = self.mirror
@@ -1789,6 +1827,7 @@ class Host:
                                     black_streak + 1
                                     if float(frame[::16, ::16].mean()) < 3.0 else 0)
 
+                    self.flush_deferred()      # a held-back change lands now
                     self._pump_preset_mailboxes()
                     self._sync_host_state()
 

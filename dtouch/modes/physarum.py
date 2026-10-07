@@ -808,9 +808,10 @@ class PhysarumMode:
         OFF), so two keys cannot add up past the floor; standalone (tests,
         no host) it keeps its own stamp. True when this press may change
         something, and stamps it."""
-        ready = getattr(self.host, "scene_ready", None) if self.host is not None else None
-        if callable(ready):
-            return bool(ready())
+        if self.host is not None and callable(getattr(self.host, "scene_ready", None)):
+            # K and Y are shell commands, gated (and deferred) by the shell's
+            # budget before they run: nothing more to ask here
+            return True
         now = self._clock()
         if not style_ready(self._style_key_t, now):
             if self.host is not None:

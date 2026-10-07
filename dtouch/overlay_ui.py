@@ -944,6 +944,13 @@ class OverlayUI:
         if kind == "slot":
             self.pending_slot = payload  # the shell assigns/clears + persists
             return
+        if kind in ("preset", "cycle") or kind in self._toggles:
+            # a look, a cycle row or a toggle switches the whole picture: the
+            # shell's shared flash budget (refused clicks land when it frees)
+            budget = getattr(self, "scene_budget", None)
+            if budget is not None and not budget(
+                    defer=lambda: self._activate(kind, payload, x, y)):
+                return
         if kind == "collapse":
             self.open = not self.open
         elif kind == "preset":

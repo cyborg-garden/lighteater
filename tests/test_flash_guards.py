@@ -398,3 +398,175 @@ def test_combinations_share_one_budget(tmp_path):
         _reset(host)
         host.ps.help_open = False
         m.really_stop()
+
+
+def _clocked(host, start):
+    t = [start]
+    host.scene_clock = lambda: t[0]
+    if hasattr(host.mode, "_clock"):
+        host.mode._clock = lambda: t[0]
+    return t
+
+
+def _flash_windows(changes_at, window=1.0):
+    """Most changes inside any `window` seconds (a change is half a flash)."""
+    best = 0
+    for i, a in enumerate(changes_at):
+        best = max(best, sum(1 for b in changes_at[i:] if b - a < window))
+    return best
+
+
+def test_panel_clicks_take_the_budget_and_land_later(tmp_path):
+    """Panel clicks on a preset row, a cycle arrow and a toggle used to skip
+    the budget (4 flashes a second at 6-7.5 clicks a second). Driven at 8
+    clicks a second through overlay_ui._activate, with the loop's flush each
+    frame: at most 2 changes a second (under the floor of 3 flashes)."""
+    host = Host(DitherGirlMode(), source=SyntheticSource(), res=(192, 108), show=False,
+                preset=None, max_frames=2, **_paths(tmp_path))
+    host.run()
+    ui = host.ui
+    try:
+        host._wire_keys()
+        assert ui.scene_budget == host.scene_ready
+        cyc_key = next(iter(ui._cycles))
+        cyc = ui._cycles[cyc_key]
+        tog_key = next(iter(ui._toggles))
+        tog = ui._toggles[tog_key]
+        for kind, payload, read in (
+                ("preset", None, lambda: ui.preset_idx),
+                ("cycle", (cyc_key, 1), lambda: getattr(ui, cyc.attr)),
+                (tog_key, None, lambda: getattr(ui, tog.attr))):
+            t = _clocked(host, 200.0 + len(kind))
+            host._scene_key_t = None
+            at, last, n = [], read(), 0
+            for f in range(120):                       # 2 s at 60 fps
+                if f % 8 == 0:                         # 7.5 clicks a second
+                    p = payload if kind != "preset" else n % len(ui.presets)
+                    n += 1
+                    ui._activate(kind, p, 0, 0)
+                host.flush_deferred()
+                cur = read()
+                if cur != last:
+                    at.append(t[0])
+                    last = cur
+                t[0] += 1 / 60
+            assert len(at) >= 2, (kind, at)
+            assert _flash_windows(at) <= 2 + 1, (kind, at)   # boundary tolerance
+            assert len(at) <= 5, (kind, len(at))
+    finally:
+        host.mode.stop()
+
+
+def test_a_refused_change_is_deferred_and_lands(tmp_path):
+    """A quick look-then-palette: the second change is held, not lost, and
+    lands once the budget frees; the rate stays at one per half second."""
+    host, _ = _booted(tmp_path, frames=2)
+    m = host.mode
+    try:
+        host._wire_keys()
+        t = _clocked(host, 300.0)
+        host._route_key(ord("x"))                    # swap lands now
+        pts = (host.ui.ph_point_bg_idx, host.ui.ph_point_fg_idx)
+        t[0] += 0.1
+        before = host.ui.ph_depth, host.ui.ph_fractal
+        host._route_key(ord("h"))                    # refused: deferred
+        assert (host.ui.ph_depth, host.ui.ph_fractal) == before
+        assert host.flush_deferred() is False        # budget still busy
+        t[0] += 0.45
+        assert host.flush_deferred() is True         # 0.55 s after the swap
+        assert (host.ui.ph_depth, host.ui.ph_fractal) != before
+        assert (host.ui.ph_point_bg_idx, host.ui.ph_point_fg_idx) == pts
+        # only the latest refused change is kept
+        t[0] += 0.1
+        host._route_key(ord("x"))
+        host._route_key(ord("h"))
+        assert host._deferred is not None
+        t[0] += 0.5
+        host.flush_deferred()
+        assert host._deferred is None
+        # panic wins over a queued change, and blackout ON is never held
+        t[0] += 0.1
+        host._route_key(ord("x"))
+        assert host._deferred is not None
+        host._route_key(ord("0"))
+        assert host._deferred is None
+        host._route_key(ord(" "))
+        assert host.ps.blackout is True
+    finally:
+        _reset(host)
+        m.really_stop()
+
+
+def test_blackout_off_takes_the_shared_budget(tmp_path):
+    host, _ = _booted(tmp_path, frames=2)
+    m = host.mode
+    try:
+        host._wire_keys()
+        t = _clocked(host, 400.0)
+        host._route_key(ord(" "))                    # ON at 400.0
+        t[0] += 0.6                                  # past the hold...
+        host._scene_key_t = t[0] - 0.1               # ...but a change just landed
+        host._route_key(ord(" "))
+        assert host.ps.blackout is True, "OFF waits for the budget"
+        t[0] += 0.5
+        host._route_key(ord(" "))
+        assert host.ps.blackout is False
+    finally:
+        _reset(host)
+        m.really_stop()
+
+
+def test_a_mouse_click_closing_help_takes_the_budget(tmp_path):
+    import cv2
+    host, _ = _booted(tmp_path, frames=2)
+    m = host.mode
+    try:
+        host._wire_keys()
+        t = _clocked(host, 500.0)
+        host._route_key(ord("?"))
+        assert host.ps.help_open is True
+        t[0] += 0.1
+        host._on_mouse(cv2.EVENT_LBUTTONDOWN, 5, 5, 0)
+        assert host.ps.help_open is True, "held inside the budget"
+        t[0] += 0.5
+        host.flush_deferred()
+        assert host.ps.help_open is False, "the held close lands"
+    finally:
+        host.ps.help_open = False
+        m.really_stop()
+
+
+def test_a_menu_commit_stamps_the_budget(tmp_path):
+    host, _ = _booted(tmp_path, frames=2)
+    m = host.mode
+    try:
+        host._wire_keys()
+        t = _clocked(host, 600.0)
+        host._scene_key_t = None
+        host._menu_commit(m.id, False)
+        assert host._scene_key_t == 600.0
+        t[0] += 0.1
+        before = host.ui.ph_point_bg_idx, host.ui.ph_point_fg_idx
+        host._route_key(ord("x"))
+        assert (host.ui.ph_point_bg_idx, host.ui.ph_point_fg_idx) == before
+    finally:
+        _reset(host)
+        m.really_stop()
+
+
+def test_panic_stamps_the_budget(tmp_path):
+    host, _ = _booted(tmp_path, frames=2)
+    m = host.mode
+    try:
+        host._wire_keys()
+        t = _clocked(host, 700.0)
+        host._scene_key_t = None
+        host._route_key(ord("0"))
+        assert host._scene_key_t == 700.0
+        t[0] += 0.1
+        before = host.ui.ph_point_bg_idx, host.ui.ph_point_fg_idx
+        host._route_key(ord("x"))
+        assert (host.ui.ph_point_bg_idx, host.ui.ph_point_fg_idx) == before
+    finally:
+        _reset(host)
+        m.really_stop()
