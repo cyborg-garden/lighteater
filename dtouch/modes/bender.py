@@ -168,7 +168,11 @@ def bend_frame(rgb, effect, amount, seed, phase=0.0, t=0.0, sort="off",
 
 def make_worker():
     """A fresh bend worker (dtouch.bender_worker). It starts importing now,
-    so the first bend is not the one that waits for it."""
+    so the first bend is not the one that waits for it. A fresh worker has
+    no memory of frames: a worker process starts empty, and a thread worker
+    shares this process's STREAK_MEMORY, so that is cleared here (on start
+    and on every respawn alike)."""
+    STREAK_MEMORY.clear()
     return ThreadWorker() if POOL == "thread" else ProcessWorker()
 
 
@@ -243,9 +247,6 @@ class BenderMode:
     def start(self, host):
         self.host = host
         self._reset()
-        # a worker process starts with empty memory; a thread worker shares
-        # this one, so clear it too
-        STREAK_MEMORY.clear()
         self._worker = make_worker()
 
     def stop(self):

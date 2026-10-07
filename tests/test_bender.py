@@ -316,11 +316,11 @@ def test_streak_paints_where_it_moves_and_not_where_it_is_still():
     # and the paint sits on the rows that moved, nowhere else (the rest of
     # the frame only dims with the room's motion)
     rows = sc_m["trail"].sum((1, 2))
-    assert rows[BAND].min() > 0 and rows[:24].sum() == 0 and rows[48:].sum() == 0
+    assert (rows[BAND] > 0).mean() > 0.6 and rows[:24].sum() == 0 and rows[48:].sum() == 0
 
 
 def test_streak_calms_back_toward_clean_when_the_room_stops():
-    frames = [_walk(k) for k in range(6)] + [_walk(5)] * 24
+    frames = [_walk(k) for k in range(6)] + [_walk(5)] * 45      # 1.5 s still
     outs, sc = _streak_run(frames)
     peak = _paint(outs[5], frames[5])[BAND].mean()
     calm = _paint(outs[-1], frames[-1])[BAND].mean()
@@ -370,6 +370,123 @@ def test_the_kick_is_one_on_an_onset_and_decays():
     k = B.kick_step(1.0, False, B.KICK_TAU_S)
     assert abs(k - math.exp(-1)) < 1e-9
     assert B.kick_step(0.5, False, 0) == 0.5
+
+
+def _rel_lum(rgb):
+    c = rgb.astype(np.float64) / 255
+    c = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * c[..., 0] + 0.7152 * c[..., 1] + 0.0722 * c[..., 2]
+
+
+def _flash_rates(frames_out, secs):
+    """Per pixel, flashes a second, WCAG style: a transition is a swing of
+    0.1 relative luminance against the last extreme with the darker side
+    under 0.8; a flash is a pair of opposing transitions."""
+    ext = dirn = n = None
+    for out in frames_out:
+        L = _rel_lum(out)
+        if ext is None:
+            ext, dirn, n = L.copy(), np.zeros(L.shape, np.int8), np.zeros(L.shape, np.int32)
+            continue
+        up = (L - ext >= 0.1) & (ext < 0.8) & (dirn <= 0)
+        dn = (ext - L >= 0.1) & (L < 0.8) & (dirn >= 0)
+        n += (up | dn) & (dirn != 0)
+        dirn = np.where(up, 1, np.where(dn, -1, dirn))
+        ext = np.where(up | dn, L, np.where(dirn > 0, np.maximum(ext, L),
+                                            np.where(dirn < 0, np.minimum(ext, L), ext)))
+    return n / 2 / secs
+
+
+def _waving_hand(secs=4, hz=30, onset_hz=0.0, w=160, h=90):
+    """A room with a few lamps and a hand-sized bright blob sweeping side to
+    side once a second, bent with LINE STREAK; returns the outputs."""
+    rng = np.random.default_rng(1)
+    y, x = np.mgrid[0:h, 0:w]
+    base = 90 + 50 * np.sin(x / 17) * np.cos(y / 11)
+    bg = np.stack([base, base * 0.9 + 10, base * 0.8 + 20], -1)
+    for _ in range(10):
+        cx, cy, r = rng.integers(0, w), rng.integers(0, h), rng.integers(4, 10)
+        bg[(x - cx) ** 2 + (y - cy) ** 2 < r * r] = 235
+    sc, kick, outs = {}, 0.0, []
+    for f in range(secs * hz):
+        t = f / hz
+        img = bg.copy()
+        cx = w / 2 + w / 3 * math.sin(2 * math.pi * t)
+        img[((x - cx) / 15) ** 2 + ((y - h / 2) / 25) ** 2 < 1] = 210
+        onset = onset_hz > 0 and f > 0 and int(t * onset_hz) != int((t - 1 / hz) * onset_hz)
+        kick = B.kick_step(kick, onset, 1 / hz)
+        outs.append(S.sensor_bend(np.clip(img, 0, 255).astype(np.uint8), "streak", 0.75,
+                                  0x1234ABCD, t, scratch=sc, live={"kick": kick, "bass": 0.3}))
+    return outs
+
+
+def _worst_window(rate, w, h):
+    """The worst share of pixels over 3 flashes a second in any window the
+    size of WCAG's 341 x 256 (of a 1024 x 768 screen), scaled to the frame."""
+    hot = (rate > 3).astype(float)
+    ww, wh = max(1, w * 341 // 1024), max(1, h * 256 // 768)
+    cs = np.pad(hot.cumsum(0).cumsum(1), ((1, 0), (1, 0)))
+    win = cs[wh:, ww:] - cs[:-wh, ww:] - cs[wh:, :-ww] + cs[:-wh, :-ww]
+    return win.max() / (ww * wh)
+
+
+@pytest.mark.parametrize("onset_hz", [0.0, 4.0])
+def test_a_waving_hand_paints_without_flashing(onset_hz):
+    """At most 3 flashes a second on effectively every pixel, and far under
+    WCAG's general flash area, even with sound onsets four times a second.
+    Before the calm redesign (rows re-rolled together 12 times a second) a
+    waving hand put 13.9% of a WCAG window over 3 flashes a second."""
+    outs = _waving_hand(onset_hz=onset_hz)
+    rate = _flash_rates(outs, 4)
+    assert (rate > 3).mean() <= 0.01, (rate > 3).mean()
+    assert _worst_window(rate, 160, 90) < 0.05, _worst_window(rate, 160, 90)
+    # and it still paints: the hand leaves rainbow trails behind it
+    painted = np.abs(outs[-1].astype(int) - outs[0].astype(int)).sum(-1) > 60
+    assert painted.mean() > 0.03
+
+
+def test_a_whole_frame_brightness_change_is_not_motion():
+    """Auto exposure or a stage light lifts everything at once: that must not
+    paint (it painted most of the frame before the frame's own change was
+    taken off)."""
+    a = _scene(72, 128, seed=4)
+    b = np.clip(a.astype(int) + 25, 0, 255).astype(np.uint8)
+    sc = {}
+    S.sensor_bend(a, "streak", 0.75, 1, 0.0, scratch=sc)
+    S.sensor_bend(b, "streak", 0.75, 1, 1 / 30, scratch=sc)
+    assert (sc["trail"].max(-1) > 0).mean() < 0.1
+
+
+def test_a_noisy_still_room_stays_calm():
+    rng = np.random.default_rng(5)
+    base = _scene(72, 128, seed=6).astype(float)
+    sc = {}
+    for k in range(10):
+        px = np.clip(base + rng.normal(0, 6, base.shape), 0, 255).astype(np.uint8)
+        S.sensor_bend(px, "streak", 0.75, 1, k / 30, scratch=sc)
+    assert (sc["trail"].max(-1) > 0).mean() < 0.01
+
+
+def test_trails_fade_by_the_second_not_by_the_bend():
+    """A slow machine bends less often; the paint must fade the same."""
+    frames = [_walk(k) for k in range(6)]
+    _, sc = _streak_run(frames)
+    still = frames[-1]
+    t0 = 5 / 30
+    fast, slow = {k: (v.copy() if hasattr(v, "copy") else v) for k, v in sc.items()}, \
+        {k: (v.copy() if hasattr(v, "copy") else v) for k, v in sc.items()}
+    for i in range(1, 13):                                 # 30 bends a second
+        S.sensor_bend(still, "streak", 0.75, 11, t0 + i / 30, scratch=fast)
+    for i in range(1, 5):                                  # 10 bends a second
+        S.sensor_bend(still, "streak", 0.75, 11, t0 + 3 * i / 30, scratch=slow)
+    assert sc["trail"].sum() > 0
+    assert np.array_equal(fast["trail"], slow["trail"])
+
+
+def test_a_fresh_worker_forgets_the_frames_before():
+    S.STREAK_MEMORY["prev"] = np.zeros((2, 2), np.int32)
+    M.make_worker().kill()
+    assert S.STREAK_MEMORY == {}
 
 
 # ---------- sort and post ----------

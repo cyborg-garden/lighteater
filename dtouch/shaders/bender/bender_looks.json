@@ -7,7 +7,7 @@
  "effect_titles": {
   "bent": "bent cam",
   "thermal": "thermal",
-  "streak": "line streak",
+  "streak": "prism",
   "zigzag": "zigzag perm",
   "erosion": "dqt erosion",
   "remap": "dht remap",
@@ -228,19 +228,25 @@
   ]
  },
  "streak": {
-  "hz": 12,
+  "hz": 3,
+  "hue_drift": 48,
   "src": 20,
+  "noise": 2,
   "src_gain": 6,
   "bright": 200,
   "edge": 72,
+  "kick": [64,160],
   "rows": [96,128],
-  "len": [40,100,40],
-  "hue": 1100,
-  "trail": 225,
+  "len": [40,100],
+  "hue": 384,
+  "step_hz": 30,
+  "trail": 238,
+  "attack": 48,
   "energy": [2048,230],
   "glow": 200,
   "dim": [16,170],
-  "gap_s": 0.5
+  "gap_s": 0.5,
+  "max_steps": 15
  },
  "stack_weights": [
   ["swap",0.6],

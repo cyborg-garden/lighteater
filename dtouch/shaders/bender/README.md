@@ -58,8 +58,11 @@ rerun with nothing changed is a no-op.
   (encode quality 0..1 and the copy block), `bent_mix`,
   `iconic` (how many sensor looks come before the JPEG bends), `thermal`
   (THERMAL's rings, shadow, grain, edge rim, blur radius and palettes),
-  `streak` (LINE STREAK's motion threshold, rows, thread length, hue sweep,
-  trail decay, motion energy, glow, dim and the gap that restarts it),
+  `streak` (LINE STREAK, titled prism: the per-row re-roll rate and hue
+  drift, the motion bar and its noise factor, the kick's edge light, rows,
+  thread length, hue sweep, the fade and attack steps a second, trail decay
+  and attack per step, motion energy, glow, dim, and the gap that restarts
+  it),
   `stack_weights`, and `loop` (bend rate, stall window, and the lost-worker
   respawn gap, its doubling ceiling and the losses in a row before giving up).
   `loop.max_bend_hz` is the bend rate, held by a deadline rather than a
@@ -72,9 +75,12 @@ rerun with nothing changed is a no-op.
   seeds on each fixture (plus the byte smear), the MCU walk of each fixture,
   every sensor bend on a rule-defined pixel fixture at two sizes, the pixel
   sort, `settle` (settle_alpha on fixed inputs, floats), `streak_seq` (LINE
-  STREAK remembers frames, so each case is a sequence on the fixture with a
-  250-grey `rect` painted in, its own `t`, `kick` and `bass`, replayed in
-  order with one memory; the last frame comes after a gap), and the seeded
+  STREAK remembers frames, so each case is a sequence, replayed in order with
+  one memory; each frame is the fixture at its own `w` x `h` with a 250-grey
+  `rect` painted in and `lift` added to every channel, clamped, at its own
+  `t`, `kick` and `bass`; the `kind`s cover a walking block, a still
+  picture, a whole-frame brightness lift, a resize, time going back and a
+  large seed), and the seeded
   generator's first values. The bends' arithmetic is
   written to match JavaScript's (`Math.round` is half up, `Math.imul`, Uint8
   truncation), so the page's `jpeg.js`, `sensor.js` and `sort.js` reproduce
