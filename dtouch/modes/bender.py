@@ -51,7 +51,7 @@ from .. import bender as B
 from ..bender_jpeg import EFFECTS as JPEG_EFFECTS
 from ..bender_jpeg import JpegError, bend, rng32
 from ..bender_post import fold, post, show, sort_runs
-from ..bender_sensor import SENSOR_EFFECTS, sensor_bend
+from ..bender_sensor import SENSOR_EFFECTS, STREAK_MEMORY, sensor_bend
 from ..bender_worker import ProcessWorker, ThreadWorker
 from ..hud import AMBER
 from ..imgui import DIM
@@ -120,10 +120,12 @@ def _thumb_stats(rgb):
 
 
 def bend_frame(rgb, effect, amount, seed, phase=0.0, t=0.0, sort="off",
-               quality=B.JPEG_Q):
-    """One bend, pure: RGB uint8 working-size pixels in, a dict out with
+               quality=B.JPEG_Q, live=None):
+    """One bend: RGB uint8 working-size pixels in, a dict out with
     `status` ('ok' | 'decode' | 'dead'), `rgb` when ok, `parse_fail`, and
-    per-stage milliseconds. Runs on the worker thread."""
+    per-stage milliseconds. Runs on the worker thread. Pure except LINE
+    STREAK, which remembers the last frames in the worker
+    (bender_sensor.STREAK_MEMORY) and reads `live` ({kick, bass})."""
     t0 = time.perf_counter()
     a = B.clamp01(amount)
     src_stats = _thumb_stats(rgb)
@@ -131,7 +133,7 @@ def bend_frame(rgb, effect, amount, seed, phase=0.0, t=0.0, sort="off",
     img = rgb
     if a > 0 and effect in SENSOR_EFFECTS:
         s0 = time.perf_counter()
-        img = sensor_bend(rgb, effect, a, seed, t)
+        img = sensor_bend(rgb, effect, a, seed, t, scratch=STREAK_MEMORY, live=live)
         sensor_ms = (time.perf_counter() - s0) * 1000
     ok, enc = cv2.imencode(".jpg", cv2.cvtColor(img, cv2.COLOR_RGB2BGR),
                            [cv2.IMWRITE_JPEG_QUALITY, int(round(quality * 100))])
@@ -166,7 +168,11 @@ def bend_frame(rgb, effect, amount, seed, phase=0.0, t=0.0, sort="off",
 
 def make_worker():
     """A fresh bend worker (dtouch.bender_worker). It starts importing now,
-    so the first bend is not the one that waits for it."""
+    so the first bend is not the one that waits for it. A fresh worker has
+    no memory of frames: a worker process starts empty, and a thread worker
+    shares this process's STREAK_MEMORY, so that is cleared here (on start
+    and on every respawn alike)."""
+    STREAK_MEMORY.clear()
     return ThreadWorker() if POOL == "thread" else ProcessWorker()
 
 
@@ -234,6 +240,7 @@ class BenderMode:
         self.last_timing = {}
         self.bass = 0.0
         self.onset = B.Onset()
+        self.kick = 0.0                # LINE STREAK's onset burst (B.kick_step)
         self._rng = np.random.default_rng()
 
     # ----- lifecycle -----
@@ -339,9 +346,10 @@ class BenderMode:
             Section("BEND", [
                 Cycle("effect", "bd_effect_idx", list(EFFECT_LABELS),
                       save_key="effect", status=str,
-                      tip="E steps through them. Bent cam and thermal are "
-                          "whole bent-camera looks; the next six bend the "
-                          "JPEG file, the last three the sensor."),
+                      tip="E steps through them. Bent cam, thermal and line "
+                          "streak are whole looks (line streak paints with "
+                          "movement); the next six bend the JPEG file, the "
+                          "last three the sensor."),
                 Slider("Amount", "bd_amount", 0.0, 1.0, save_key="amount",
                        status="{:.0%}",
                        tip="How hard the bend bites. B steps 25/50/75/100%. "
@@ -512,8 +520,9 @@ class BenderMode:
         want = self.live_amount()
         a = self.backoff.amount(want)
         seed = B.touch_seed(self.cut.cuts) if effect in SENSOR_EFFECTS else self.cut.seed
+        live = {"kick": self.kick, "bass": self.bass}
         if not worker.submit(bend_frame, rgb, effect, a, seed, self.cut.phase,
-                             self.t, self.sort()):
+                             self.t, self.sort(), B.JPEG_Q, live):
             self._lose_worker(now, "died")    # dead, or not reading its pipe
             return
         # a clean frame: the back-off ran out of tries and sent it unbent
@@ -571,6 +580,7 @@ class BenderMode:
         if audio_levels is not None:
             self.bass = float(audio_levels.get("bass", 0.0))
             onset = self.onset.step(self.bass, dt)
+        self.kick = B.kick_step(self.kick, onset, dt)
         self.cut.step(dt, onset, B.cut_tempo(self.effect()))
         bends_before = self.bends
         if self.inflight is not None:

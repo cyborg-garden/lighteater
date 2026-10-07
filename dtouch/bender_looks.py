@@ -11,8 +11,8 @@ code, never retyped.
 - `bender_looks.json` (bundled by the page): the mode's card metadata, the
   effects in E's order and their titles, the looks, the ladders, the settle
   and cut-clock constants, the working-size budget and its governor, the
-  back-off, sound and autopilot sway, BENT CAM's mix, THERMAL's constants,
-  STACK's weights, and
+  back-off, sound and autopilot sway, BENT CAM's mix, THERMAL's and LINE
+  STREAK's constants, STACK's weights, and
   the bend loop's rate limits.
 - `bender_goldens.json` (imported only by the site's tests): the bends'
   outputs, as sha256 of the bytes or pixels, on the unit's three fixture
@@ -109,7 +109,7 @@ def looks_payload():
         "backoff": {"clean_after": B.CLEAN_AFTER, "backoff": B.BACKOFF,
                     "recover": B.RECOVER, "floor": B.FLOOR},
         "sound": {"lift": B.SOUND_LIFT, "auto_sway": B.AUTO_SWAY,
-                  "auto_sway_s": B.AUTO_SWAY_S},
+                  "auto_sway_s": B.AUTO_SWAY_S, "kick_tau_s": B.KICK_TAU_S},
         "jpeg": {"quality": B.JPEG_Q, "block": B.BLOCK},
         "bent_mix": {k: _num(v) for k, v in BENT_MIX.items()},
         "iconic": S.ICONIC,
@@ -117,6 +117,16 @@ def looks_payload():
                     "grain": S.THERMAL_GRAIN, "noise_hz": S.THERMAL_NOISE_HZ,
                     "edge": list(S.THERMAL_EDGE), "blur": S.THERMAL_BLUR,
                     "palettes": [[list(c) for c in p] for p in S.THERMAL_PALETTES]},
+        "streak": {"hz": S.STREAK_HZ, "hue_drift": S.STREAK_HUE_DRIFT,
+                   "src": S.STREAK_SRC, "noise": S.STREAK_NOISE,
+                   "src_gain": S.STREAK_SRC_GAIN, "bright": S.STREAK_BRIGHT,
+                   "edge": S.STREAK_EDGE, "kick": list(S.STREAK_KICK),
+                   "rows": list(S.STREAK_ROWS), "len": list(S.STREAK_LEN),
+                   "hue": S.STREAK_HUE, "step_hz": S.STREAK_STEP_HZ,
+                   "trail": S.STREAK_TRAIL, "attack": S.STREAK_ATTACK,
+                   "energy": list(S.STREAK_ENERGY), "glow": S.STREAK_GLOW,
+                   "dim": list(S.STREAK_DIM), "gap_s": S.STREAK_GAP_S,
+                   "max_steps": S.STREAK_MAX_STEPS},
         "stack_weights": [[name, w] for name, w in STACK_WEIGHTS],
         "loop": {"max_bend_hz": mode.MAX_BEND_HZ, "stall_s": mode.STALL_S,
                  "respawn_gap_s": mode.RESPAWN_GAP_S,
@@ -175,12 +185,82 @@ def _sensor_cases():
     cases = []
     for w, h in SENSOR_SIZES:
         for effect in SENSOR_EFFECTS:
+            if effect == "streak":
+                continue                  # remembers frames: streak_seq below
             for a in SENSOR_AMOUNTS:
                 for seed in SENSOR_SEEDS:
                     for t in SENSOR_TIMES:
                         px = sensor_bend(sensor_fixture(w, h), effect, a, seed, t)
                         cases.append({"w": w, "h": h, "effect": effect, "amount": _num(a),
                                       "seed": seed, "t": _num(t), "sha256": _sha(px.tobytes())})
+    return cases
+
+
+# LINE STREAK remembers the frames before (the motion, the trail), so its
+# goldens are sequences, each frame the sensor fixture at (w, h) with a
+# 250-grey block `rect` painted in and `lift` added to every channel
+# (clamped), at time `t`, with its `kick` and `bass`. The kinds: a block
+# walking right (with uneven bend timing, an onset and rising bass, and a
+# gap that restarts it), a still picture (every frame the same output),
+# a whole-frame brightness change (not motion), a resize, time going back,
+# and a large seed (which LINE STREAK ignores).
+def _walk_frames(w, h, n, dt=None, kick_at=4, gap_last=True):
+    frames, t = [], 0.0
+    for k in range(n):
+        if k:
+            t += (dt[k % len(dt)] if dt else 1) / 30
+        if gap_last and k == n - 1:
+            t = 2.0
+        frames.append({"w": w, "h": h, "rect": [3 + 6 * k, h // 4, max(4, w // 4), max(3, h // 3)],
+                       "lift": 0, "t": t,
+                       "kick": 1.0 if k == kick_at else (0.5 if k == kick_at + 1 else 0.0),
+                       "bass": 0.9 if k >= 6 else 0.2})
+    return frames
+
+
+def _still_frames(w, h, n, lift_at=None):
+    return [{"w": w, "h": h, "rect": [5, h // 3, 8, 6],
+             "lift": 30 if lift_at is not None and k >= lift_at else 0,
+             "t": k / 30, "kick": 0.0, "bass": 0.0} for k in range(n)]
+
+
+def streak_cases_spec():
+    resize = _walk_frames(48, 32, 4, gap_last=False) + [
+        dict(f, w=40, h=30, t=f["t"] + 4 / 30) for f in _walk_frames(40, 30, 3, gap_last=False)]
+    back = _walk_frames(44, 28, 5, gap_last=False)
+    back[3]["t"], back[4]["t"] = 1 / 30, 2 / 30          # time goes back, then on
+    return [
+        {"kind": "walk", "amount": 0.75, "seed": 7, "frames": _walk_frames(48, 32, 9)},
+        {"kind": "walk", "amount": 1.0, "seed": 4242, "frames": _walk_frames(97, 61, 9, dt=(1, 2, 3))},
+        {"kind": "walk", "amount": 0.3, "seed": 99, "frames": _walk_frames(64, 40, 9)},
+        {"kind": "still", "amount": 0.75, "seed": 5, "frames": _still_frames(40, 30, 5)},
+        {"kind": "lift", "amount": 0.75, "seed": 5, "frames": _still_frames(40, 30, 6, lift_at=3)},
+        {"kind": "resize", "amount": 0.75, "seed": 11, "frames": resize},
+        {"kind": "back", "amount": 0.75, "seed": 13, "frames": back},
+        {"kind": "seed", "amount": 0.75, "seed": 0xFFFFFFF0, "frames": _walk_frames(52, 36, 6, gap_last=False)},
+    ]
+
+
+def streak_frame(f):
+    """The pixels of one LINE STREAK golden frame (see streak_cases_spec)."""
+    w, h = f["w"], f["h"]
+    px = sensor_fixture(w, h).astype(np.int64)
+    x0, y0, rw, rh = f["rect"]
+    px[y0:y0 + rh, x0:x0 + rw] = 250
+    return np.minimum(255, px + f["lift"]).astype(np.uint8)
+
+
+def _streak_cases():
+    cases = []
+    for c in streak_cases_spec():
+        scratch = {}
+        frames = []
+        for f in c["frames"]:
+            out = sensor_bend(streak_frame(f), "streak", c["amount"], c["seed"], f["t"],
+                              scratch=scratch, live={"kick": f["kick"], "bass": f["bass"]})
+            frames.append({**{k: _num(v) for k, v in f.items()}, "sha256": _sha(out.tobytes())})
+        cases.append({"kind": c["kind"], "amount": _num(c["amount"]), "seed": c["seed"],
+                      "frames": frames})
     return cases
 
 
@@ -227,6 +307,7 @@ def goldens_payload():
         "walks": _walks(),
         "jpeg": _jpeg_cases(),
         "sensor": _sensor_cases(),
+        "streak_seq": _streak_cases(),
         "sort": _sort_cases(),
         "settle": _settle_cases(),
     }

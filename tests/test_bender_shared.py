@@ -205,8 +205,21 @@ def test_goldens_are_distinct_and_cover_every_bend(goldens):
     assert effects == set(B.EFFECTS) - set(SENSOR_EFFECTS) | {"smear"}
     sens = [c["sha256"] for c in goldens["sensor"]]
     assert len(set(sens)) == len(sens)
-    assert {c["effect"] for c in goldens["sensor"]} == set(SENSOR_EFFECTS)
-    assert set(SENSOR_EFFECTS) == {"bent", "thermal", "hclock", "vclock", "adc"}
+    # LINE STREAK remembers frames, so it has sequences instead (streak_seq)
+    assert {c["effect"] for c in goldens["sensor"]} == set(SENSOR_EFFECTS) - {"streak"}
+    assert set(SENSOR_EFFECTS) == {"bent", "thermal", "streak", "hclock", "vclock", "adc"}
+    kinds = {c["kind"] for c in goldens["streak_seq"]}
+    assert kinds == {"walk", "still", "lift", "resize", "back", "seed"}
+    walk = [f["sha256"] for c in goldens["streak_seq"] if c["kind"] == "walk" for f in c["frames"]]
+    assert len(set(walk)) == len(walk)
+    # a still picture gives the same output every frame
+    for c in goldens["streak_seq"]:
+        if c["kind"] == "still":
+            assert len({f["sha256"] for f in c["frames"]}) == 1
+    assert any(c["seed"] > 0x7FFFFFFF for c in goldens["streak_seq"])
+    assert any(len({(f["w"], f["h"]) for f in c["frames"]}) > 1 for c in goldens["streak_seq"])
+    assert any(any(b["t"] < a["t"] for a, b in zip(c["frames"], c["frames"][1:]))
+               for c in goldens["streak_seq"])
     assert all(c["runs"] > 0 for c in goldens["sort"])
     first = goldens["rng32"]["first"]
     assert len(set(first)) == len(first) and all(0 <= v < 1 for v in first)

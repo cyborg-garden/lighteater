@@ -32,6 +32,15 @@ repeating palette and gradients come back as many thin rainbow rings round
 every light, shadows near-black, grain boiling, edges rimmed. It works on
 RGB, after the demosaic.
 
+LINE STREAK (titled "prism") is the third whole look, and the one that
+answers the performer: where the picture moves, its edges shoot thin
+rainbow threads sideways that trail off, so a waving hand paints with
+light; stillness lets the trails die back to the clean picture; a sound
+onset lights the bright edges and the bass widens the threads. It is built
+not to flash (see the block above line_streak).
+It remembers the frames before it (the worker keeps STREAK_MEMORY), so its
+goldens are frame sequences.
+
 Everything moves with `t` (seconds) through slow value noise: the fault
 drifts like a finger on a circuit board. The seed picks which fault.
 
@@ -53,12 +62,12 @@ import math
 
 import numpy as np
 
-SENSOR_EFFECTS = ("bent", "thermal", "hclock", "vclock", "adc")
-SENSOR_TITLES = {"bent": "bent cam", "thermal": "thermal", "hclock": "h clock",
-                 "vclock": "v clock", "adc": "adc bits"}
-# The first two are whole looks, iconic on their own; the rest are single
+SENSOR_EFFECTS = ("bent", "thermal", "streak", "hclock", "vclock", "adc")
+SENSOR_TITLES = {"bent": "bent cam", "thermal": "thermal", "streak": "prism",
+                 "hclock": "h clock", "vclock": "v clock", "adc": "adc bits"}
+# The first three are whole looks, iconic on their own; the rest are single
 # faults.
-ICONIC = 2
+ICONIC = 3
 
 # BENT CAM's three faults, weighed
 BENT_MIX = {"cast": 1.0, "slip": 0.7, "adc": 0.45}
@@ -389,6 +398,192 @@ def thermal(px, amount, seed, t):
     return out.astype(np.uint8)
 
 
+# LINE STREAK (titled "prism"): light painting with the camera. Where the
+# picture moves, its edges shoot thin rainbow threads sideways that trail off
+# and fade, so a waving hand paints; stillness lets the trails die and the
+# picture calm back toward clean. A sound onset (`kick`, 0..1) throws a burst
+# from every bright edge, still or not; the bass widens the threads. The
+# scene under the threads sinks toward a dark violet as the room's motion
+# rises. Remembers between bends (the last luma, the trail, the motion
+# energy): in the worker process, STREAK_MEMORY.
+#
+# Calm by design, not by a looser bar: a row re-rolls whether and which way
+# it throws only STREAK_HZ times a second, each row at its own phase so no two
+# change together; its hue is held and drifts slowly with time; a touch (the
+# seed) re-rolls nothing; fades and the rise of new paint are counted per
+# 1/STREAK_STEP_HZ of a second, not per bend, so a slow machine paints the
+# same; a whole-frame brightness change (auto exposure, a stage light) is
+# taken off before anything counts as motion, and a pixel only moves when a
+# neighbour does too.
+STREAK_HZ = 3              # re-rolls a second, per row, each at its own phase
+STREAK_HUE_DRIFT = 48      # how fast every row's hue turns, in hue steps a second
+STREAK_SRC = 20            # a luma change under this is camera noise, not motion
+STREAK_NOISE = 2           # and under this many times the frame's typical change
+STREAK_SRC_GAIN = 6        # how fast a change over STREAK_SRC reaches full strength
+STREAK_BRIGHT = 200        # the luma a still edge needs to throw on a kick
+STREAK_EDGE = 72           # and the luma step across it
+STREAK_KICK = (64, 160)    # a kick over [0] (of 255) lights bright edges at [1], steady
+STREAK_ROWS = (96, 128)    # a row's odds of throwing, out of 256: [0] + [1] x amount
+STREAK_LEN = (40, 100)     # thread length, out of 256 of the width: + x amount
+STREAK_HUE = 384           # hue swept along a thread (1536 is the whole wheel)
+STREAK_STEP_HZ = 30        # fades and the attack are counted in these steps a second
+STREAK_TRAIL = 238         # what a trail keeps per step, out of 256
+STREAK_ATTACK = 48         # how far new paint may rise per step, out of 255
+STREAK_ENERGY = (2048, 230)  # motion energy: gain on the moving share, decay per step
+STREAK_GLOW = 200          # a thread's brightness at its root, before the source's luma
+STREAK_DIM = (16, 170)     # the scene's dim, out of 256: [0] + [1] x energy, x amount
+STREAK_GAP_S = 0.5         # bends further apart than this compare nothing
+STREAK_MAX_STEPS = 15      # the most fade steps one bend counts
+
+# per hue segment (six 256-step ramps), the R, G, B ramp: 0 = 0, 1 = 255,
+# 2 = up, 3 = down
+_HUE_RAMPS = np.array([[1, 2, 0], [3, 1, 0], [0, 1, 2], [0, 3, 1], [2, 0, 1], [1, 0, 3]])
+
+# the worker process's memory between bends (a mode entry is a fresh process)
+STREAK_MEMORY = {}
+
+
+def _hue_rgb(hi):
+    """Hue indices 0..1535 (int array) to RGB 0..255 (..., 3), full saturation."""
+    ramp = _HUE_RAMPS[hi >> 8]
+    f = (hi & 255)[..., None]
+    return np.where(ramp == 0, 0, np.where(ramp == 1, 255, np.where(ramp == 2, f, 255 - f)))
+
+
+def _hash32_ab(a, b, c):
+    """hash01's 32-bit integer for int arrays a and b (same shape)."""
+    m = np.uint64(_M32)
+    h = (((a.astype(np.uint64) & m) ^ np.uint64(0x9E3779B9)) * np.uint64(0x85EBCA6B)) & m
+    h = ((h ^ (b.astype(np.uint64) & m) ^ (h >> np.uint64(13))) * np.uint64(0xC2B2AE35)) & m
+    h = ((h ^ np.uint64(int(c) & _M32) ^ (h >> np.uint64(16))) * np.uint64(0x27D4EB2F)) & m
+    h ^= h >> np.uint64(15)
+    return h.astype(np.int64)
+
+
+def _q8(v):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        v = 0.0
+    if not math.isfinite(v):
+        v = 0.0
+    return _clamp(_jround(_clamp(v, 0.0, 1.0) * 255), 0, 255)
+
+
+def _lower_median(v, lo):
+    """The lower median of int array v, all values >= lo (a histogram, so the
+    page computes the same number)."""
+    counts = np.bincount((v - lo).ravel())
+    k = (v.size - 1) // 2
+    return int(np.searchsorted(np.cumsum(counts), k + 1)) + lo
+
+
+def line_streak(px, amount, seed, t, scratch=None, live=None):
+    """LINE STREAK on RGB uint8 (h, w, 3); returns new pixels and updates
+    `scratch`, its memory of the frames before (None: a first frame, kept
+    nowhere). The worker passes STREAK_MEMORY. `seed` is accepted and not
+    used: a new touch must not re-roll the threads at once."""
+    scratch = {} if scratch is None else scratch
+    live = live or {}
+    h, w = px.shape[:2]
+    n = w * h
+    a8 = _clamp(_jround(_clamp(amount, 0, 1) * 256), 0, 256)
+    k8, b8 = _q8(live.get("kick", 0)), _q8(live.get("bass", 0))
+    prev = scratch.get("prev")
+    last_t = scratch.get("t")
+    # a new size, or a gap (another look ran, or time went back), starts
+    # clean: no motion, no old trail
+    if (prev is None or prev.shape != (h, w) or last_t is None or t < last_t
+            or t - last_t > STREAK_GAP_S):
+        prev = None
+        steps = 0
+        scratch["trail"] = np.zeros((h, w, 3), np.int32)
+        scratch["energy"] = 0
+    else:
+        steps = min(STREAK_MAX_STEPS, _jround((t - last_t) * STREAK_STEP_HZ))
+    scratch["t"] = t
+    trail = scratch["trail"]
+    p = px[..., :3].astype(np.int32)
+    lum = luma(p)
+    # how far each pixel moved, less the whole frame's own change, and only
+    # where a neighbour moved too: a source's strength (on a kick, bright
+    # edges throw too, moving or not)
+    if prev is None:
+        s = np.zeros((h, w), np.int32)
+    else:
+        dl = lum - prev
+        dev = np.abs(dl - _lower_median(dl, -255))
+        # a noisy room raises the bar: twice the frame's typical change
+        src = max(STREAK_SRC, STREAK_NOISE * _lower_median(dev, 0))
+        dp = np.pad(dev, ((0, 0), (1, 1)), mode="edge")
+        dev = np.minimum(dev, np.maximum(dp[:, :-2], dp[:, 2:]))
+        s = (dev - src) * STREAK_SRC_GAIN
+    if k8 > STREAK_KICK[0]:
+        # on, not graded: a kick that rises and falls would flicker
+        lp = np.pad(lum, ((0, 0), (1, 1)), mode="edge")
+        e = np.abs(lp[:, 2:] - lp[:, :-2])
+        kick = (lum >= STREAK_BRIGHT) & (STREAK_KICK[1] > s) & (e >= STREAK_EDGE)
+        s = np.where(kick, STREAK_KICK[1], s)
+    s8 = np.clip(s, 0, 255).astype(np.int32)
+    scratch["prev"] = lum
+    cnt = int(np.count_nonzero(s8))
+    moved = min(256, (cnt * STREAK_ENERGY[0]) // n)
+    energy = int(scratch["energy"])
+    for _ in range(steps):
+        energy = (energy * STREAK_ENERGY[1]) >> 8
+        trail = (trail * STREAK_TRAIL) >> 8
+    energy = max(moved, energy, STREAK_KICK[1] >> 1 if k8 > STREAK_KICK[0] else 0)
+    scratch["energy"] = energy
+    # new threads: each row re-rolls whether and which way it throws
+    # STREAK_HZ times a second, at its own phase
+    rows = np.arange(h)
+    phase = (_hash32_ab(rows, np.zeros(h, np.int64), 0x84) >> 8) / 16777216.0
+    epoch = np.floor(t * STREAK_HZ + phase).astype(np.int64)
+    p_row = STREAK_ROWS[0] + ((STREAK_ROWS[1] * a8) >> 8)
+    length = max(8, (w * (STREAK_LEN[0] + ((STREAK_LEN[1] * a8) >> 8))) >> 8)
+    th = 1 + ((b8 * 3) >> 8)
+    throws = (_hash32_ab(rows, epoch, 0x81) >> 24) < p_row
+    left = (_hash32_ab(rows, epoch, 0x83) >> 31) == 1
+    drift = math.floor(t * STREAK_HUE_DRIFT)
+    hue0 = ((_hash32_ab(rows, np.zeros(h, np.int64), 0x82) >> 8) + drift) % 1536
+    new = np.zeros((h, w, 3), np.int32)
+    k = np.arange(w)
+    for is_left in (False, True):
+        ys = rows[throws & (left == is_left)]
+        if ys.size == 0:
+            continue
+        sr, lr = s8[ys], lum[ys]
+        if is_left:
+            sr, lr = sr[:, ::-1], lr[:, ::-1]
+        j = np.maximum.accumulate(np.where(sr > 0, k, -1), axis=1)
+        d = k - j
+        ok = (j >= 0) & (d < length)
+        jj = np.where(ok, j, 0)
+        ls = np.take_along_axis(lr, jj, axis=1)
+        ss = np.take_along_axis(sr, jj, axis=1)
+        v = ((((STREAK_GLOW + (ls >> 3)) * ss) >> 8) * (length - d)) // length
+        v = np.where(ok, v, 0)
+        hi = (hue0[ys][:, None] + (np.where(ok, d, 0) * STREAK_HUE) // length) % 1536
+        cv = (_hue_rgb(hi) * v[..., None]) >> 8
+        if is_left:
+            cv = cv[:, ::-1]
+        new[ys] = cv
+    thick = new.copy()
+    for dy in range(1, th):
+        thick[dy:] = np.maximum(thick[dy:], new[:-dy])
+    # new paint rises at most STREAK_ATTACK a step: a soft attack, not a pop
+    trail = np.minimum(np.maximum(trail, thick), trail + STREAK_ATTACK * max(1, steps))
+    scratch["trail"] = trail
+    # the scene sinks toward violet with the room's motion, the trail on top
+    dd = (a8 * (STREAK_DIM[0] + ((STREAK_DIM[1] * energy) >> 8))) >> 8
+    kd, kg, kb = 256 - dd, 256 - (dd >> 1), dd >> 3
+    r = (p[..., 0] * kd) >> 8
+    g = (((p[..., 1] * kd) >> 8) * kg) >> 8
+    b = np.minimum(255, ((p[..., 2] * kd) >> 8) + kb)
+    out = np.stack([r, g, b], -1) + trail
+    return np.minimum(255, out).astype(np.uint8)
+
+
 # THERMAL works on RGB, after the camera's demosaic: what the processor hands
 # on, not what the sensor read.
 RGB_BENDS = {"thermal": thermal}
@@ -410,7 +605,7 @@ def bent_cam(raw, amount, seed, t, mix=None):
     return cur
 
 
-def sensor_bend(px, effect, amount, seed=1, t=0.0, mix=None):
+def sensor_bend(px, effect, amount, seed=1, t=0.0, mix=None, scratch=None, live=None):
     """One sensor bend on RGB uint8 pixels (h, w, 3); returns new RGB pixels.
     Amount 0, an unknown effect or a frame under 4x4 returns `px` itself."""
     try:
@@ -422,6 +617,8 @@ def sensor_bend(px, effect, amount, seed=1, t=0.0, mix=None):
     if a == 0 or effect not in SENSOR_EFFECTS or w < 4 or h < 4:
         return px
     seed = int(seed) & _M32
+    if effect == "streak":
+        return line_streak(px, a, seed, t, scratch, live)
     if effect in RGB_BENDS:
         return RGB_BENDS[effect](px, a, seed, t)
     raw = mosaic(px)

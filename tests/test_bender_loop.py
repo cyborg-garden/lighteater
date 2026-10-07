@@ -879,3 +879,33 @@ def test_a_lost_worker_shows_the_live_camera_while_waiting(tmp_path, monkeypatch
     out = m.step(np.full_like(frame, 255), None, 1 / 30)
     assert out.mean() > 250
     m.stop()
+
+
+def test_each_bend_carries_the_kick_and_bass_for_line_streak(tmp_path, monkeypatch):
+    """LINE STREAK reads the sound in the worker: every job carries the live
+    kick (1 on a bass onset, then decaying) and the bass."""
+    sent = []
+
+    def capture(rgb, effect, a, seed, phase, t, sort, quality, live):
+        sent.append(dict(live))
+        return dict(status="ok", rgb=rgb, bend_ms=5.0)
+
+    monkeypatch.setattr(M, "POOL", "thread")
+    monkeypatch.setattr(M, "bend_frame", capture)
+    host = _booted(tmp_path)
+    m = host.mode
+    m.start(host)
+    frame = _scene(90, 160)
+    import time
+    for k in range(12):
+        bass = 0.9 if k >= 6 else 0.05
+        m.step(frame, {"bass": bass}, 1 / 30)
+        end = time.time() + 2
+        while m.inflight is not None and time.time() < end:
+            m._settle(time.perf_counter())
+            time.sleep(0.001)
+        time.sleep(1 / 30)
+    m.stop()
+    assert sent and all(set(s) == {"kick", "bass"} for s in sent)
+    assert any(s["kick"] == 1.0 and s["bass"] == 0.9 for s in sent)
+    assert all(s["kick"] == 0.0 for s in sent if s["bass"] == 0.05)
