@@ -63,7 +63,12 @@ BANK_SEED_MAX = 7
 # second. Panic (0) stays free: it is the way back.
 SCENE_COOLDOWN_S = 0.5
 SCENE_KEY_COMMANDS = tuple(f"preset.recall.{i}" for i in range(1, BANK_SLOTS + 1)) + (
-    "preset.prev", "preset.next", "physarum.depth")
+    "preset.prev", "preset.next", "physarum.depth",
+    # the menu (m) dims and lifts the whole frame; swap and Circuit Bender's
+    # cycle keys change the whole picture each press (flash guards)
+    "menu.open", "physarum.swap",
+    "bender.effect", "bender.amount", "bender.split", "bender.copy",
+    "bender.sort", "bender.long")
 
 AUTO_RELEASE_KEYS = frozenset(
     [ord(c) for c in "0123456789[],.-=_+xpdoj"]
@@ -136,7 +141,7 @@ def _register_quit(reg, ps, toasts):
 
 def _wire_perform_keys(reg, ui, hud, ps, recall, mode_commands=None,
                        safe_look=None, get_overlay=None, debug_line=None,
-                       flash_guard=None):
+                       flash_guard=None, flash_clock=None):
     """Register the perform layer (DESIGN.md §6.2) on `reg`.
 
     `recall(name)` must route a preset apply through the same path a panel click
@@ -183,12 +188,27 @@ def _wire_perform_keys(reg, ui, hud, ps, recall, mode_commands=None,
         slot = _slot_of(name)
         toasts.flash(f"{slot} - {name}" if slot else name)
 
+    last_on = [None]
+
     def blackout():
-        # a mode may hold a blackout back (physarum over paper: a white frame
-        # cut to black is a full-frame flash, so it takes a cooldown)
-        guard = flash_guard() if flash_guard is not None else None
-        if guard is not None and not guard():
-            return
+        # ON is a safety cut to black: always, at once. OFF comes back at
+        # most once per SCENE_COOLDOWN_S after the last ON, so a held or
+        # spammed space gives at most 2 flashes a second (the owner's floor
+        # is 3, WCAG 2.3.1). `flash_clock` is the shell's wall clock; a
+        # caller without one (a bare registry) keeps the plain toggle.
+        if not ps.blackout:
+            if flash_clock is not None:
+                last_on[0] = flash_clock()
+        else:
+            if (flash_clock is not None and last_on[0] is not None
+                    and flash_clock() - last_on[0] < SCENE_COOLDOWN_S):
+                toasts.hint("blackout holds %.1f s" % SCENE_COOLDOWN_S)
+                return
+            # a mode may hold it longer (physarum over paper: the style
+            # cooldown it shares with K and Y)
+            guard = flash_guard() if flash_guard is not None else None
+            if guard is not None and not guard():
+                return
         ps.blackout = not ps.blackout
         if ps.blackout:
             toasts.flash("BLACKOUT", AMBER)
@@ -753,7 +773,8 @@ class Host:
                            safe_look=lambda: self.mode.safe_look(),
                            get_overlay=lambda: self.overlay,
                            debug_line=self.debug_line,
-                           flash_guard=lambda: getattr(self.mode, "flash_guard", None))
+                           flash_guard=lambda: getattr(self.mode, "flash_guard", None),
+                           flash_clock=lambda: getattr(self, "scene_clock", time.monotonic)())
         self._register_shell_commands()
         # held or spammed scene keys: one change per SCENE_COOLDOWN_S
         for name in SCENE_KEY_COMMANDS:
@@ -799,6 +820,10 @@ class Host:
         if key == 255:
             return
         if self.menu.open:
+            # m / Esc close the menu: the same gate that opened it, so a held
+            # m cannot flicker the dimmed frame (flash guards)
+            if key in (ord("m"), ord("M"), 27) and not self.scene_ready():
+                return
             from_boot = self.menu.boot         # a commit closes and clears it
             action, mode_id = self.menu.key(key)
             if action == "switch":

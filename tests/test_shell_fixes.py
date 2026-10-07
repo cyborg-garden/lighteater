@@ -1852,8 +1852,11 @@ def test_collapsing_the_panel_cancels_the_rename_that_would_eat_every_key(tmp_pa
     # hint names, then the quit it refused.
     _present(host, 9)                                # TAB
     assert host.overlay is not OverlayState.PANEL
+    t = [100.0]
+    host.scene_clock = lambda: t[0]
     _present(host, ord("m"))
     assert host.menu.open is True
+    t[0] += 0.6          # a person's pause: m and Esc share the menu's gate
     _present(host, 27)                               # Esc closes the menu
     _present(host, ord("?"))
     assert host.ps.help_open is True

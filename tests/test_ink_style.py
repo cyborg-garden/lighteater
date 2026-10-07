@@ -149,6 +149,7 @@ def test_held_or_spammed_k_y_and_blackout_stay_under_three_a_second(tmp_path):
     try:
         clock = _Clock()
         m._clock = clock
+        host.scene_clock = clock                 # the shell's blackout hold too
         host._wire_keys()
         space = ord(" ")
         for key, read in ((ord("k"), lambda: m.ink_paper),
@@ -162,14 +163,20 @@ def test_held_or_spammed_k_y_and_blackout_stay_under_three_a_second(tmp_path):
                 host.reg.dispatch(key)
                 seen.append(read())
             n = _transitions(seen)
-            assert 3 <= n and n / 3.0 <= 2.0 + 1e-9, (chr(key), n)
-        # off paper, blackout is a black frame over a black ground: free
+            # K and Y: one change per 0.5 s. Blackout: ON at once, OFF held
+            # 0.5 s, so at most 2 flashes (4 changes) a second
+            limit = 4.0 if key == space else 2.0
+            assert 3 <= n and n / 3.0 <= limit + 1e-9, (chr(key), n)
+        # off paper too: ON is instant, OFF waits out the hold (flash guards)
         m.ink_paper, m._paper_on, m._paper_amt = False, False, 0.0
         host.ps.blackout = False
-        for _ in range(10):
+        clock.t += 1.0
+        host.reg.dispatch(space)
+        assert host.ps.blackout is True           # ON at once
+        for _ in range(10):                       # a third of a second of presses
             clock.t += 1 / 30
             host.reg.dispatch(space)
-        assert host.ps.blackout is False          # 10 toggles, all taken
+        assert host.ps.blackout is True           # OFF held
     finally:
         m.really_stop()
 
