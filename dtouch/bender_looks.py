@@ -109,7 +109,7 @@ def looks_payload():
         "backoff": {"clean_after": B.CLEAN_AFTER, "backoff": B.BACKOFF,
                     "recover": B.RECOVER, "floor": B.FLOOR},
         "sound": {"lift": B.SOUND_LIFT, "auto_sway": B.AUTO_SWAY,
-                  "auto_sway_s": B.AUTO_SWAY_S},
+                  "auto_sway_s": B.AUTO_SWAY_S, "kick_tau_s": B.KICK_TAU_S},
         "jpeg": {"quality": B.JPEG_Q, "block": B.BLOCK},
         "bent_mix": {k: _num(v) for k, v in BENT_MIX.items()},
         "iconic": S.ICONIC,
@@ -117,6 +117,12 @@ def looks_payload():
                     "grain": S.THERMAL_GRAIN, "noise_hz": S.THERMAL_NOISE_HZ,
                     "edge": list(S.THERMAL_EDGE), "blur": S.THERMAL_BLUR,
                     "palettes": [[list(c) for c in p] for p in S.THERMAL_PALETTES]},
+        "streak": {"hz": S.STREAK_HZ, "src": S.STREAK_SRC, "src_gain": S.STREAK_SRC_GAIN,
+                   "bright": S.STREAK_BRIGHT, "edge": S.STREAK_EDGE,
+                   "rows": list(S.STREAK_ROWS), "len": list(S.STREAK_LEN),
+                   "hue": S.STREAK_HUE, "trail": S.STREAK_TRAIL,
+                   "energy": list(S.STREAK_ENERGY), "glow": S.STREAK_GLOW,
+                   "dim": list(S.STREAK_DIM), "gap_s": S.STREAK_GAP_S},
         "stack_weights": [[name, w] for name, w in STACK_WEIGHTS],
         "loop": {"max_bend_hz": mode.MAX_BEND_HZ, "stall_s": mode.STALL_S,
                  "respawn_gap_s": mode.RESPAWN_GAP_S,
@@ -175,12 +181,46 @@ def _sensor_cases():
     cases = []
     for w, h in SENSOR_SIZES:
         for effect in SENSOR_EFFECTS:
+            if effect == "streak":
+                continue                  # remembers frames: streak_seq below
             for a in SENSOR_AMOUNTS:
                 for seed in SENSOR_SEEDS:
                     for t in SENSOR_TIMES:
                         px = sensor_bend(sensor_fixture(w, h), effect, a, seed, t)
                         cases.append({"w": w, "h": h, "effect": effect, "amount": _num(a),
                                       "seed": seed, "t": _num(t), "sha256": _sha(px.tobytes())})
+    return cases
+
+
+# LINE STREAK remembers the frames before (the motion, the trail), so its
+# goldens are sequences: the sensor fixture with a bright block walking
+# right, a sound onset partway, the bass rising, and a gap that restarts it.
+STREAK_SEQ = ((48, 32, 0.75, 7), (97, 61, 1.0, 4242), (64, 40, 0.3, 99))
+STREAK_FRAMES = 9
+
+
+def streak_frame(w, h, k):
+    """Frame k of a LINE STREAK golden sequence, and its live inputs."""
+    px = sensor_fixture(w, h).copy()
+    x0, y0, rw, rh = 3 + 6 * k, h // 4, max(4, w // 4), max(3, h // 3)
+    px[y0:y0 + rh, x0:x0 + rw] = 250
+    live = {"kick": 1.0 if k == 4 else (0.5 if k == 5 else 0.0),
+            "bass": 0.9 if k >= 6 else 0.2}
+    t = k / 30 if k < 8 else 2.0          # the last frame comes after a gap
+    return px, live, t, [int(x0), int(y0), int(rw), int(rh)]
+
+
+def _streak_cases():
+    cases = []
+    for w, h, a, seed in STREAK_SEQ:
+        scratch = {}
+        frames = []
+        for k in range(STREAK_FRAMES):
+            px, live, t, rect = streak_frame(w, h, k)
+            out = sensor_bend(px, "streak", a, seed, t, scratch=scratch, live=live)
+            frames.append({"t": _num(t), "rect": rect, "kick": _num(live["kick"]),
+                           "bass": live["bass"], "sha256": _sha(out.tobytes())})
+        cases.append({"w": w, "h": h, "amount": _num(a), "seed": seed, "frames": frames})
     return cases
 
 
@@ -227,6 +267,7 @@ def goldens_payload():
         "walks": _walks(),
         "jpeg": _jpeg_cases(),
         "sensor": _sensor_cases(),
+        "streak_seq": _streak_cases(),
         "sort": _sort_cases(),
         "settle": _settle_cases(),
     }

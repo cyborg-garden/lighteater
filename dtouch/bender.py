@@ -27,9 +27,10 @@ from .bender_jpeg import EFFECT_TITLES as JPEG_TITLES
 from .bender_jpeg import EFFECTS as JPEG_EFFECTS
 from .bender_sensor import ICONIC, SENSOR_EFFECTS, SENSOR_TITLES
 
-# Every bend E steps through: the two iconic sensor looks first (BENT CAM,
-# the landing look: what a bent camera looks like at a glance; THERMAL), then
-# the five JPEG bends and their stack, then the three single sensor faults.
+# Every bend E steps through: the three iconic sensor looks first (BENT CAM,
+# the landing look: what a bent camera looks like at a glance; THERMAL; LINE
+# STREAK), then the five JPEG bends and their stack, then the three single
+# sensor faults.
 EFFECTS = SENSOR_EFFECTS[:ICONIC] + JPEG_EFFECTS + SENSOR_EFFECTS[ICONIC:]
 EFFECT_TITLES = {**JPEG_TITLES, **SENSOR_TITLES}
 
@@ -38,10 +39,12 @@ EFFECT_TITLES = {**JPEG_TITLES, **SENSOR_TITLES}
 # some in the other cast, and posterised bursts that keep the outlines. Each
 # look is an effect with its own amount and post, tuned by eye on a camera.
 # THERMAL is tuned against bent-camera footage: thin false-colour rings round
-# every light, near-black shadows.
+# every light, near-black shadows. LINE STREAK paints with movement: rainbow
+# threads shoot from whatever moves and trail off.
 LOOKS = {
     "bent": dict(effect="bent", amount=0.65, split=0, sort="off", copy=0, long=0),
     "thermal": dict(effect="thermal", amount=0.55, split=0, sort="off", copy=0, long=0),
+    "streak": dict(effect="streak", amount=0.75, split=0, sort="off", copy=0, long=0),
     "zigzag": dict(effect="zigzag", amount=0.5, split=0, sort="off", copy=0, long=0),
     "erosion": dict(effect="erosion", amount=0.75, split=0, sort="off", copy=0, long=0),
     "remap": dict(effect="remap", amount=0.5, split=0, sort="off", copy=0, long=0),
@@ -94,7 +97,7 @@ def clamp01(v):
 # short running average (the long exposure's pass, time constant in seconds).
 # SCAN SWAP gets a very short one that keeps its bands saturated. The table
 # bends are steady; the sensor bends drift on their own slow clock.
-SETTLE_S = dict(bent=0, thermal=0, zigzag=0, erosion=0, remap=0.35,
+SETTLE_S = dict(bent=0, thermal=0, streak=0, zigzag=0, erosion=0, remap=0.35,
                 swap=0.08, chroma=0, stack=0.12, hclock=0, vclock=0, adc=0)
 
 
@@ -248,6 +251,14 @@ class CutClock:
 # browser's analyser reports onsets itself.
 ONSET_RISE = 0.25
 ONSET_TAU_S = 0.4
+# LINE STREAK's kick: 1 on an onset, decaying with this time constant; a
+# burst of threads rides it (dtouch.bender_sensor.line_streak).
+KICK_TAU_S = 0.3
+
+
+def kick_step(kick, onset, dt):
+    """The kick after a frame: 1 on an onset, else decayed by dt."""
+    return 1.0 if onset else kick * math.exp(-max(float(dt or 0), 0.0) / KICK_TAU_S)
 
 
 class Onset:

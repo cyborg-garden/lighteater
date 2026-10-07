@@ -54,9 +54,12 @@ rerun with nothing changed is a no-op.
   time constant), `cut` (the cut clock and
   `touch_cuts`), `working` (the pixel budget), `governor` (`max_step_ms` is
   the desktop's main-thread cost ceiling; the page may ignore it), `backoff`,
-  `sound`, `jpeg` (encode quality 0..1 and the copy block), `bent_mix`,
+  `sound` (with `kick_tau_s`, the decay of LINE STREAK's onset kick), `jpeg`
+  (encode quality 0..1 and the copy block), `bent_mix`,
   `iconic` (how many sensor looks come before the JPEG bends), `thermal`
   (THERMAL's rings, shadow, grain, edge rim, blur radius and palettes),
+  `streak` (LINE STREAK's motion threshold, rows, thread length, hue sweep,
+  trail decay, motion energy, glow, dim and the gap that restarts it),
   `stack_weights`, and `loop` (bend rate, stall window, and the lost-worker
   respawn gap, its doubling ceiling and the losses in a row before giving up).
   `loop.max_bend_hz` is the bend rate, held by a deadline rather than a
@@ -68,7 +71,10 @@ rerun with nothing changed is a no-op.
 - `bender_goldens.json`: sha256 of every JPEG bend at three amounts and two
   seeds on each fixture (plus the byte smear), the MCU walk of each fixture,
   every sensor bend on a rule-defined pixel fixture at two sizes, the pixel
-  sort, `settle` (settle_alpha on fixed inputs, floats), and the seeded
+  sort, `settle` (settle_alpha on fixed inputs, floats), `streak_seq` (LINE
+  STREAK remembers frames, so each case is a sequence on the fixture with a
+  250-grey `rect` painted in, its own `t`, `kick` and `bass`, replayed in
+  order with one memory; the last frame comes after a gap), and the seeded
   generator's first values. The bends' arithmetic is
   written to match JavaScript's (`Math.round` is half up, `Math.imul`, Uint8
   truncation), so the page's `jpeg.js`, `sensor.js` and `sort.js` reproduce
