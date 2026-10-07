@@ -332,9 +332,11 @@ class PhysarumMode:
                           video_bg=True, ink_paper=True, ink_fold=4),
     }
 
-    # the autopilot never re-casts onto an ink look: paper turns the whole
-    # frame white, a gesture the performer makes (the browser's AUTO_LOOKS)
-    AUTO_SKIP = INK_LOOKS
+    # The autopilot may re-cast onto the ink looks too (the owner's call,
+    # 2026-10-08): the paper fades in over ALIVE style.fade and every cast
+    # takes the shared flash budget, so a re-cast onto inkblot cannot flash
+    # the room. Nothing is held out of the pool.
+    AUTO_SKIP = ()
 
     # apply="reset" merges a look over these; matte / video_bg / video_mix are
     # deliberately absent (keep semantics — rig switches survive look hops).
