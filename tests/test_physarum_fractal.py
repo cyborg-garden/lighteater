@@ -33,8 +33,8 @@ import cv2
 import numpy as np
 import pytest
 
-from dtouch.modes.physarum import (FRACTAL_DEFAULT, LOOK_FRACTAL, PALETTES_PH,
-                                   PhysarumMode)
+from dtouch.modes.physarum import (FRACTAL_DEFAULT, INK_LOOKS, LOOK_FRACTAL,
+                                   PALETTES_PH, PhysarumMode)
 from dtouch.panelspec import apply_look, visible
 from dtouch.physarum import (BLOOM, FRACTAL, FRACTAL_MIX_FULL, FRACTAL_NL,
                              POINT_NAMES, POINTS, PX_REF, SPATIAL_REGIMES,
@@ -460,9 +460,11 @@ def test_looks_json_exports_the_fractal_tables():
     assert fr["bloom"] == BLOOM
     assert fr["px_ref"] == PX_REF == PhysarumMode.CPU_GRID[0]
     # every look lands on depth with the fractal off, and carries its tuned
-    # amount for the depth + fractal step as `fractal_on`
+    # amount for the depth + fractal step as `fractal_on`; the ink looks
+    # (INK_LOOKS) land on that step, the only place the ink draws
     for name, look in d["builtin"].items():
-        assert look["fractal"] == PhysarumMode.BUILTIN[name]["fractal"] == 0.0
+        lands = look["fractal_on"] if name in INK_LOOKS else 0.0
+        assert look["fractal"] == PhysarumMode.BUILTIN[name]["fractal"] == lands
         assert look["fractal_on"] == LOOK_FRACTAL[name] == \
             PhysarumMode.BUILTIN[name]["fractal_on"]
         assert 0.0 < look["fractal_on"] <= 1.0
@@ -966,7 +968,9 @@ def test_every_builtin_lands_on_depth_and_h_reaches_its_on_amount(tmp_path):
         pytest.skip("no GL context available (CI)")
     run = m.commands()["physarum.depth"].run
     try:
-        for name, cfg in list(PhysarumMode.BUILTIN.items()) + [
+        # the ink looks land on the fractal step (tests/test_ink_style.py)
+        for name, cfg in [(n, c) for n, c in PhysarumMode.BUILTIN.items()
+                          if n not in INK_LOOKS] + [
                 ("panic", PhysarumMode.BUILTIN[m.safe_look()])]:
             ui.ph_fractal = 0.5                 # whatever was live before
             assert host._apply_look(name, cfg)
@@ -991,7 +995,8 @@ def test_a_look_hands_h_its_on_amount_on_any_engine(tmp_path):
         assert m._fractal_last == LOOK_FRACTAL["veinwork"]      # boot look
         for name, cfg in PhysarumMode.BUILTIN.items():
             assert host._apply_look(name, cfg)
-            assert host.ui.ph_fractal == 0.0
+            # an ink look lands on the step it is tuned for (INK_LOOKS)
+            assert host.ui.ph_fractal == (LOOK_FRACTAL[name] if name in INK_LOOKS else 0.0)
             assert m._fractal_last == LOOK_FRACTAL[name]
             m._follow_fractal()                 # the landed 0 is not an amount
             assert m._fractal_last == LOOK_FRACTAL[name]

@@ -50,3 +50,16 @@ land on the safe look's fractal step in the ink, over this palette, with
 the camera's picture hidden. Every other look still lands on depth with the
 fractal off, as the physarum unit's `looks.json` says. A host that cannot
 build or allocate the passes keeps that shared landing.
+
+**Style options** (`ink.frag` `u_paper`, `u_fold`, `u_foldSide`,
+`u_foldAngle`; `alive.json` `fold`): paper (black ink on white, one accent
+colour) and a mirror fold of 2, 4 or 6. Both are off by default, and off is
+the ink above pixel for pixel (tests/test_ink_style.py holds it against a
+frozen copy). Keys K (paper) and Y (fold: off, 2, 4, 6) on both hosts; a
+look carries them as `ink_paper` / `ink_fold` (looks.json `inkblot`, the
+one look that lands on the fractal step, with the video background on), and
+any other look or panic turns them off; the landing never sets them. The
+fold's source half, quadrant or wedge follows the performer (the matte's
+lit centroid) through `dtouch.alive.fold_side` / alive-core.js `foldSide`:
+a hysteresis past the centre lines and a 2 s `hold`, so a side change is one
+cut, never a flicker.

@@ -99,7 +99,52 @@ ALIVE = {
     # off), so the ground is black. Every other look still lands on depth
     # with the fractal off, as the physarum unit's looks.json says.
     "landing": {"palette": "violet"},
+    # E. the ink's style options (the owner's call 2026-10-07, after the
+    # TikTok study): paper (black ink on white, one accent) and a mirror
+    # fold (2, 4 or 6), both off by default and never set by the landing
+    # (ink.frag). The fold's source half follows the performer, the matte's
+    # lit centroid (fold_side below): an axis moves only once the centroid
+    # is `hyst` (a share of the frame) past the centre line; for 6 the
+    # source wedge turns in 60 degree steps once the centroid is `reach`
+    # from the centre and `angHyst` rad past the wedge's edge; and nothing
+    # moves again for `hold` seconds, so a side change is one cut, never a
+    # flicker.
+    "fold": {"hyst": 0.08, "hold": 2.0, "reach": 0.12, "angHyst": 0.15},
 }
+
+# The fold amounts Y steps through (0 off), and where a fold starts: the
+# left half, the top-left quadrant, the wedge pointing up (image space,
+# +y down), not yet moved (None).
+MIRRORS = (0, 2, 4, 6)
+FOLD_START = (-1.0, -1.0, -math.pi / 2, None)
+
+
+def _wrap(a):
+    """An angle into [-pi, pi), the same on both hosts (no % sign rules)."""
+    return a - 2.0 * math.pi * math.floor((a + math.pi) / (2.0 * math.pi))
+
+
+def fold_side(state, cx, cy, aspect, now, table=None):
+    """The fold's source as the performer moves: `state` (side x, side y,
+    wedge angle, time of the last move or None) after the matte's lit
+    centroid (cx, cy) in image space (0..1, +y down) at time `now` (s).
+    Mirrored by alive-core.js foldSide (tests on both hosts)."""
+    t = ALIVE["fold"] if table is None else table
+    sx, sy, ang, at = state
+    if at is not None and now - at < t["hold"]:
+        return state
+    nsx = -1.0 if cx < 0.5 - t["hyst"] else 1.0 if cx > 0.5 + t["hyst"] else sx
+    nsy = -1.0 if cy < 0.5 - t["hyst"] else 1.0 if cy > 0.5 + t["hyst"] else sy
+    nang = ang
+    dx, dy = (cx - 0.5) * aspect, cy - 0.5
+    if math.hypot(dx, dy) > t["reach"]:
+        off = _wrap(math.atan2(dy, dx) - ang)
+        if abs(off) > math.pi / 6 + t["angHyst"]:
+            step = math.pi / 3
+            nang = _wrap(ang + math.floor(off / step + 0.5) * step)
+    if nsx == sx and nsy == sy and nang == ang:
+        return state
+    return (nsx, nsy, nang, now)
 
 
 def keep_for(half_life, dt):

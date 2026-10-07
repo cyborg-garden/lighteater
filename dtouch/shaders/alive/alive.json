@@ -162,6 +162,12 @@
   "thornRim": 0.9,
   "landing": {
    "palette": "violet"
+  },
+  "fold": {
+   "hyst": 0.08,
+   "hold": 2.0,
+   "reach": 0.12,
+   "angHyst": 0.15
   }
  }
 }
