@@ -56,6 +56,15 @@ from . import presets as _presets
 BANK_SLOTS = 9
 BANK_SEED_MAX = 7
 
+# Scene keys a held or spammed press could strobe with (look recall 1-9, the
+# setlist's [ and ], physarum's H): one change per SCENE_COOLDOWN_S by the
+# wall clock (waitKey repeats look like presses). The owner's hard floor is
+# 3 flashes a second (WCAG 2.3.1); this holds a key path to 2 changes a
+# second. Panic (0) stays free: it is the way back.
+SCENE_COOLDOWN_S = 0.5
+SCENE_KEY_COMMANDS = tuple(f"preset.recall.{i}" for i in range(1, BANK_SLOTS + 1)) + (
+    "preset.prev", "preset.next", "physarum.depth")
+
 AUTO_RELEASE_KEYS = frozenset(
     [ord(c) for c in "0123456789[],.-=_+xpdoj"]
 )
@@ -126,7 +135,8 @@ def _register_quit(reg, ps, toasts):
 
 
 def _wire_perform_keys(reg, ui, hud, ps, recall, mode_commands=None,
-                       safe_look=None, get_overlay=None, debug_line=None):
+                       safe_look=None, get_overlay=None, debug_line=None,
+                       flash_guard=None):
     """Register the perform layer (DESIGN.md §6.2) on `reg`.
 
     `recall(name)` must route a preset apply through the same path a panel click
@@ -174,6 +184,11 @@ def _wire_perform_keys(reg, ui, hud, ps, recall, mode_commands=None,
         toasts.flash(f"{slot} - {name}" if slot else name)
 
     def blackout():
+        # a mode may hold a blackout back (physarum over paper: a white frame
+        # cut to black is a full-frame flash, so it takes a cooldown)
+        guard = flash_guard() if flash_guard is not None else None
+        if guard is not None and not guard():
+            return
         ps.blackout = not ps.blackout
         if ps.blackout:
             toasts.flash("BLACKOUT", AMBER)
@@ -737,8 +752,14 @@ class Host:
                            mode_commands=self.mode.commands(),
                            safe_look=lambda: self.mode.safe_look(),
                            get_overlay=lambda: self.overlay,
-                           debug_line=self.debug_line)
+                           debug_line=self.debug_line,
+                           flash_guard=lambda: getattr(self.mode, "flash_guard", None))
         self._register_shell_commands()
+        # held or spammed scene keys: one change per SCENE_COOLDOWN_S
+        for name in SCENE_KEY_COMMANDS:
+            cmd = self.reg.get(name)
+            if cmd is not None:
+                cmd.run = self._scene_gated(cmd.run)
         self.help_rows = self.reg.table() + [("TAB", "Cycle overlay"),
                                              ("Esc", "Step toward hidden")]
 
@@ -803,6 +824,24 @@ class Host:
         self.overlay = _perform_key(key, self.overlay, self.ps,
                                     self.reg, self.hud)
 
+    def scene_ready(self):
+        """May a scene key (a look, the setlist, H) change the scene now?
+        One change per SCENE_COOLDOWN_S by `scene_clock` (the wall clock;
+        tests set their own); True stamps it."""
+        now = getattr(self, "scene_clock", time.monotonic)()
+        last = getattr(self, "_scene_key_t", None)
+        if last is not None and now - last < SCENE_COOLDOWN_S:
+            self.hud.toasts.hint("one scene change every %.1f s" % SCENE_COOLDOWN_S)
+            return False
+        self._scene_key_t = now
+        return True
+
+    def _scene_gated(self, run):
+        def gated():
+            if self.scene_ready():
+                run()
+        return gated
+
     def _toggle_auto(self):
         on = self.auto.toggle()
         self.hud.toasts.hint("auto on - it plays itself, any scene key stops it"
@@ -818,7 +857,10 @@ class Host:
         """
         if not self.auto.on or self.mode is None or self.ui is None:
             return
-        looks = list(self.all_presets.keys())
+        # a mode may keep looks out of the autopilot's pool (physarum's ink
+        # looks: paper turns the whole frame white, the performer's call)
+        skip = getattr(self.mode, "AUTO_SKIP", ())
+        looks = [n for n in self.all_presets.keys() if n not in skip]
         modes = [m.id for m in REGISTRY]
         current = self.ui.preset_name if self.ui.preset_idx < len(
             self.ui.presets) else None

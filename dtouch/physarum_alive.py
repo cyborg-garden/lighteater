@@ -41,8 +41,8 @@ import os
 
 import numpy as np
 
-from .alive import (ALIVE, advance_pulse, count_events, depth_quantile,
-                    head_stride, keep_for)
+from .alive import (ALIVE, FOLD_START, advance_pulse, count_events,
+                    depth_quantile, head_stride, keep_for)
 from .physarum import FRACTAL, FRACTAL_NL, PX_REF
 
 SHADERS_ROOT = os.path.join(os.path.dirname(__file__), "shaders")
@@ -609,6 +609,14 @@ class AliveGL:
             self._u(p, "u_fxBurst", _NO_FX)
             self._u(p, "u_fxWave", _NO_FX)
             self._u(p, "u_fxAspect", w / max(1.0, float(h)))
+            # the style options (the mode's K and Y, a look's ink_paper /
+            # ink_fold): none set is the shipped ink, pixel for pixel
+            st = getattr(f, "ink_style", None) or {}
+            # how much the paper shows, 0..1 (the mode fades it)
+            self._u(p, "u_paper", min(max(float(st.get("paper", 0.0)), 0.0), 1.0))
+            self._u(p, "u_fold", float(st.get("fold", 0)))
+            self._u(p, "u_foldSide", tuple(float(v) for v in st.get("side", FOLD_START[:2])))
+            self._u(p, "u_foldAngle", float(st.get("angle", FOLD_START[2])))
         self._draw("ink", self.ink_out[1], setup)
 
     def ink_blit(self, fbo, w, h):

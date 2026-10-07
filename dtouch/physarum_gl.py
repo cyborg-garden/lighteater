@@ -241,6 +241,9 @@ class PhysarumFieldGL:
         self.alive_react = 0.0     # the react lever, perceptually mapped
         self.alive_person = False  # a person matte is live (the dome weighs more)
         self.alive_sound = 0.0     # sens x amplitude (quickens the pulse)
+        # the ink's style options (ink.frag): {paper, fold, side, angle};
+        # None is the shipped ink. The mode sets it each frame.
+        self.ink_style = None
         # what the alive step itself costs a frame, ms: its GPU time (timer
         # queries, read a frame late) plus the CPU time of its own calls,
         # for the host's governor. 0 until measured or while it is off.

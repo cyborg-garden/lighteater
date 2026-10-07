@@ -147,6 +147,25 @@
    "depth": 0.5,
    "fractal": 0.0,
    "fractal_on": 0.7
+  },
+  "inkblot": {
+   "point_bg": "veins",
+   "point_fg": "fingers",
+   "palette": "violet",
+   "matte": "auto",
+   "food": 0.35,
+   "gain": 1.0,
+   "decay": 0.94,
+   "exposure": 3.5,
+   "weave": 0.7,
+   "evolve": 0.5,
+   "react": 0.7,
+   "depth": 0.9,
+   "fractal": 1.0,
+   "fractal_on": 1.0,
+   "video_bg": true,
+   "ink_paper": true,
+   "ink_fold": 4
   }
  },
  "palette_names": [

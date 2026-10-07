@@ -47,10 +47,13 @@ theatrical move the instrument has), and its defaults + built-in looks.
 """
 from __future__ import annotations
 
+import time
+
 import cv2
 import numpy as np
 
-from ..alive import ALIVE
+from ..alive import (ALIVE, FOLD_START, MIRRORS, fold_side, fold_snap, paper_step,
+                     style_ready)
 from ..circuit_bent import CircuitBent
 from ..commands import Command
 from ..hud import AMBER
@@ -126,7 +129,7 @@ MELT_GAIN = 0.55
 # contours and grow a hard shadow line there, while 0.5-0.6 pulls hidden
 # anatomy out of their white blow-out. Custom looks and panic get the default.
 LOOK_DEPTH = {"veinwork": 0.9, "lightning": 0.9, "ghost": 0.6,
-              "amoeba": 0.5, "breath": 0.5}
+              "amoeba": 0.5, "breath": 0.5, "inkblot": 0.9}
 DEPTH_DEFAULT = 0.6
 # The light orbits. A light that never moves reads as an emboss filter; a
 # moving one is the strongest shape cue a flat picture can give (creases
@@ -163,8 +166,16 @@ DEPTH_FEEL_CURVE = False
 # existed renders as it always did. Panic recalls safe_look() (veinwork):
 # depth, fractal off, and H's third step at veinwork's 1.0.
 LOOK_FRACTAL = {"veinwork": 1.0, "amoeba": 0.7, "ghost": 0.85,
-                "lightning": 0.9, "breath": 0.7}
+                "lightning": 0.9, "breath": 0.7, "inkblot": 1.0}
 FRACTAL_DEFAULT = 0.0
+# The one exception to "every look lands on depth": inkblot (the owner's
+# favourite, 2026-10-07: "paper plus mirror with video veil") is an ink look,
+# and the ink only draws on H's third step, so it lands there: its `fractal`
+# is its fractal_on. It also carries the ink's style (ink_paper, ink_fold)
+# and turns the video background on (video_bg): a look may set that rig
+# switch when it names it; every other look leaves it alone (DEFAULTS has no
+# video_bg, so apply="keep" holds). It is a look, never the landing.
+INK_LOOKS = ("inkblot",)
 # The CPU fallback does not run the fractal veins (fractal_available() is
 # the GPU engine only). Its budget is already spent (~21 ms/frame for 100k
 # agents on the 576 grid), and the look is carried by passes numpy cannot
@@ -312,7 +323,18 @@ class PhysarumMode:
                           matte="luma", food=0.30, gain=0.8, decay=0.95, exposure=4.0,
                           weave=0.45, evolve=0.7, react=0.5, depth=LOOK_DEPTH["breath"],
                           fractal=FRACTAL_DEFAULT, fractal_on=LOOK_FRACTAL["breath"]),
+        # black ink on white paper, folded four ways over the camera's grey
+        # print: a Rorschach blot that moves with you (INK_LOOKS above)
+        "inkblot":   dict(point_bg="veins", point_fg="fingers", palette="violet",
+                          matte="auto", food=0.35, gain=1.0, decay=0.94, exposure=3.5,
+                          weave=0.7, evolve=0.5, react=0.7, depth=LOOK_DEPTH["inkblot"],
+                          fractal=LOOK_FRACTAL["inkblot"], fractal_on=LOOK_FRACTAL["inkblot"],
+                          video_bg=True, ink_paper=True, ink_fold=4),
     }
+
+    # the autopilot never re-casts onto an ink look: paper turns the whole
+    # frame white, a gesture the performer makes (the browser's AUTO_LOOKS)
+    AUTO_SKIP = INK_LOOKS
 
     # apply="reset" merges a look over these; matte / video_bg / video_mix are
     # deliberately absent (keep semantics — rig switches survive look hops).
@@ -435,6 +457,27 @@ class PhysarumMode:
         self._fractal_seen = None
         self._bloom_snd = 0.0        # slow envelope of the audio amplitude
         self._fractal_err_told = False  # the fractal-build failure, toasted once
+        # the ink's style options (ink.frag): K paper, Y the mirror fold
+        # (MIRRORS); a look's ink_paper / ink_fold set both, and a look
+        # without them (panic's included) turns them off. The fold's source
+        # follows the performer (fold_side).
+        self.ink_paper = False
+        self.ink_fold = 0
+        self._fold = FOLD_START
+        self._fold_fresh = False     # a fold just turned on: snap to the performer
+        # flash safety (ALIVE["style"]): what the paper shows flips at most
+        # once per cooldown (sim clock) whatever asks, and fades over `fade`;
+        # K, Y and blackout over paper take one change per cooldown (wall
+        # clock: the shell's key repeat cannot tell a held key from presses)
+        self._paper_on = False       # what the paper is fading toward
+        self._paper_amt = 0.0        # how much it shows, 0..1
+        self._paper_flip_t = None    # sim time of the last flip
+        self._style_key_t = None     # wall time of the last K / Y / blackout
+        self._clock = time.monotonic
+        # the ink holds while the paper fades out: the amount it last drew
+        # at, kept on for the fade when the look / H / slider takes it to 0
+        self._ink_fa = 0.0
+        self._ink_wanted = False     # the performer's fractal amount is > 0
 
     # ----- lifecycle -----
     def start(self, host):
@@ -709,6 +752,34 @@ class PhysarumMode:
                 toasts.flash("DEPTH %.1f + FRACTAL %.1f"
                              % (ui.ph_depth, ui.ph_fractal))
             self._fractal_seen = float(ui.ph_fractal)
+
+        def _hint():
+            # the options draw on the ink (H's third step) only
+            pf = self.pf
+            on = (self.engine == "gl" and pf is not None and self.alive_enabled
+                  and ALIVE["ink"] >= 0 and getattr(pf, "alive_error", None) is None
+                  and float(getattr(ui, "ph_fractal", 0.0)) > 0.0)
+            return "" if on else "  (on the ink: H to the fractal step)"
+
+        def _paper():
+            """K: the ink on white paper, and back. A toggle, not a scene
+            change (like H and V), so it leaves AUTO running. One change
+            per cooldown, held or spammed (the flash floor)."""
+            if not self._style_key():
+                return
+            self.ink_paper = not self.ink_paper
+            toasts.flash(("INK ON PAPER" if self.ink_paper else "ink on black") + _hint())
+
+        def _fold():
+            """Y: the mirror fold, off -> 2 -> 4 -> 6 -> off; a new fold
+            snaps to the side the performer is on."""
+            if not self._style_key():
+                return
+            self.ink_fold = MIRRORS[(MIRRORS.index(self.ink_fold) + 1) % len(MIRRORS)
+                                    if self.ink_fold in MIRRORS else 0]
+            self._fold_fresh = bool(self.ink_fold)
+            toasts.flash(("MIRROR %d" % self.ink_fold if self.ink_fold else "mirror off")
+                         + _hint())
         return {"physarum.swap": Command("physarum.swap",
                                          "Swap body/field points", "x", _swap),
                 "physarum.burst": Command("physarum.burst",
@@ -720,10 +791,36 @@ class PhysarumMode:
                                            _random),
                 "physarum.depth": Command("physarum.depth",
                                           "Depth: flat / relief / fractal", "h",
-                                          _depth)}
+                                          _depth),
+                "physarum.ink_paper": Command("physarum.ink_paper",
+                                              "Ink on paper", "k", _paper),
+                "physarum.ink_fold": Command("physarum.ink_fold",
+                                             "Ink mirror fold: off / 2 / 4 / 6", "y",
+                                             _fold)}
 
     def safe_look(self):
         return "veinwork"
+
+    def _style_key(self):
+        """K, Y and blackout over paper: one change per cooldown, by the
+        wall clock (a held key repeats faster than any person presses).
+        True when this press may change something, and stamps it."""
+        now = self._clock()
+        if not style_ready(self._style_key_t, now):
+            if self.host is not None:
+                self.host.hud.toasts.hint("one ink change every %.1f s"
+                                          % ALIVE["style"]["cooldown"])
+            return False
+        self._style_key_t = now
+        return True
+
+    def flash_guard(self):
+        """The shell asks before it toggles blackout: over paper (white,
+        showing or fading) a blackout is a full-frame flash, so it takes
+        the style cooldown too. Elsewhere blackout is free."""
+        if not (self.ink_paper or self._paper_on or self._paper_amt > 0.0):
+            return True
+        return self._style_key()
 
     def fractal_available(self):
         """Whether the running engine draws the fractal veins: the GPU
@@ -749,6 +846,14 @@ class PhysarumMode:
             v = FRACTAL_DEFAULT
         self._fractal_last = min(max(v, 0.0), 1.0) if np.isfinite(v) else FRACTAL_DEFAULT
         self._fractal_seen = float(self._ui("ph_fractal", FRACTAL_DEFAULT))
+        # the ink's style rides the look (inkblot carries it); a look
+        # without it, panic's safe look included, turns both options off
+        self.ink_paper = cfg.get("ink_paper") is True
+        fold = cfg.get("ink_fold", 0)
+        fold = fold if isinstance(fold, int) and fold in MIRRORS else 0
+        if fold and fold != self.ink_fold:
+            self._fold_fresh = True
+        self.ink_fold = fold
         # a look of the performer's own: no ink landing to undo or still to do
         self._ink_landed = None
         self._land_wanted = False
@@ -1046,6 +1151,15 @@ class PhysarumMode:
         self._follow_fractal()
         if self.engine == "gl":
             fa = min(max(float(self._ui("ph_fractal", FRACTAL_DEFAULT)), 0.0), 1.0)
+            # the paper never cuts out with the ink: when a look, H, panic or
+            # the slider takes the fractal (and so the ink) away while paper
+            # shows, the ink keeps drawing at its last amount until the
+            # paper has faded out (at most `fade` s), then hands over
+            self._ink_wanted = fa > 0.0
+            if fa > 0.0:
+                self._ink_fa = fa
+            elif self._paper_amt > 0.0 and self._ink_fa > 0.0:
+                fa = self._ink_fa
             amp = float(audio_levels.get("amp", 0.0)) if audio_levels is not None else 0.0
             self._bloom_snd += (amp - self._bloom_snd) * BLOOM["sound_ema"]
             pf.fractal = fa
@@ -1185,6 +1299,36 @@ class PhysarumMode:
             self._burst_pending = self._wave_pending = False
 
         if self.engine == "gl":
+            # the ink's style options: the fold's source follows the
+            # performer, the matte's lit centroid (as burst and wave land),
+            # through fold_side's hysteresis and hold
+            if self.ink_fold:
+                # every 4th cell: the side only needs the centroid's half,
+                # and the full GL grid would cost ~3 ms a frame here
+                w = m[::4, ::4] * np.clip(gray[::4, ::4], 0.05, 1.0)
+                tot = float(w.sum())
+                if tot > 1e-3:
+                    cx = float((self._cx[::4, ::4] * w).sum() / tot + 0.5) / gw
+                    cy = float((self._cy[::4, ::4] * w).sum() / tot + 0.5) / gh
+                    asp = rw / max(1.0, float(rh))
+                    if self._fold_fresh:
+                        self._fold = fold_snap(self._fold, cx, cy, asp, self._t, self.ink_fold)
+                        self._fold_fresh = False
+                    else:
+                        self._fold = fold_side(self._fold, cx, cy, asp, self._t, self.ink_fold)
+            # the paper: a flip (key, look or panic) at most once per
+            # cooldown, then a fade, never a cut (the flash floor)
+            # what it aims at: paper wanted AND the ink wanted on screen
+            # (a look without the fractal, H's flat and depth steps aim it
+            # off, so it fades out under the held ink)
+            want = self.ink_paper and self._ink_wanted
+            if want != self._paper_on and style_ready(self._paper_flip_t, self._t):
+                self._paper_on = want
+                self._paper_flip_t = self._t
+            self._paper_amt = paper_step(self._paper_amt, self._paper_on, dt)
+            pf.ink_style = (None if not (self._paper_amt > 0.0 or self.ink_fold) else
+                            {"paper": self._paper_amt, "fold": self.ink_fold,
+                             "side": self._fold[:2], "angle": self._fold[2]})
             # the alive fractal step's inputs (it runs only on H's third
             # step): the motion map the browser's motion pass keeps (r the
             # lingering history, g this frame's luma, b the instantaneous
@@ -1228,6 +1372,10 @@ class PhysarumMode:
                 if samp is not None:
                     self._last_lum = samp
                 return out
+        # the ink did not draw this frame (it stopped, failed, or was never
+        # on): no paper shows, so it starts from 0, and a return fades in
+        # under the cooldown
+        self._paper_amt, self._paper_on = 0.0, False
         # SIGNAL on the GPU (DESIGN.md §2.4; PR #26's measured port list):
         # with the GL engine and the rack ON, tonemap + colorize + upscale +
         # video composite + the whole rack run as fragment passes on the

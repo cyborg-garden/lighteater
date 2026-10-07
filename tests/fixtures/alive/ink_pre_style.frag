@@ -40,25 +40,7 @@
 //     Over the camera (V veil or full) the feed is the ground, and the
 //     molten glow is screened over it;
 //   - accents (exploring tips, connection light, the cast keys) stay
-//     luminous through the palette, on top;
-//   - two style options, both off by default (the landing never sets
-//     them; off is the picture above, pixel for pixel), after the owner's
-//     TikTok study (2026-10-07, @sakrmusic):
-//     paper (u_paper): black ink on warm white paper, a grey smoke wash
-//       where the network has mass, ink bleeding a little past each edge,
-//       and ONE accent colour (the palette's hot end) laid on like a
-//       second ink; over the camera the feed prints soft grey under it.
-//       u_paper is 0..1 and the host fades it (alive.json `style`): a
-//       white frame never cuts in, the flash floor (3 a second) holds;
-//     fold (u_fold): the whole pass reads folded coordinates, so the
-//       network, the camera and the accents fold together: 2 mirrors one
-//       half across the centre line, 4 one quadrant across both, 6 a 60
-//       degree wedge around the centre into six, at the picture's own
-//       scale (reaching past the frame reads it mirrored). The source half,
-//       quadrant or wedge is the one the performer is in (u_foldSide,
-//       u_foldAngle: the host follows the matte's lit centroid with a
-//       hysteresis and a hold, dtouch.alive.fold_side), so nobody is
-//       folded out of view.
+//     luminous through the palette, on top.
 // Textures are in image space (row 0 at the top); flip once here.
 uniform sampler2D u_lum;      // alive picture: r whole, g veins, b accents
 uniform sampler2D u_fields;   // tonemap_fractal's fields, grid size
@@ -94,27 +76,6 @@ uniform vec3 u_fxWave;
 uniform float u_fxAspect;
 in vec2 v_uv;
 layout(location = 0) out vec4 o;
-uniform float u_paper;       // 0..1: how much the paper shows (the host fades it)
-uniform float u_fold;        // the mirror fold: 0 off, 2, 4, 6 (u_mirror is the camera's)
-uniform vec2 u_foldSide;     // source half per axis: -1 left / top, +1 right / bottom
-uniform float u_foldAngle;   // the 6-fold source wedge's centre, rad (image space, -pi/2 up)
-vec2 foldUv(vec2 uv) {
-  if (u_fold < 1.5) return uv;
-  vec2 s = vec2(u_foldSide.x < 0.0 ? -1.0 : 1.0, u_foldSide.y < 0.0 ? -1.0 : 1.0);
-  if (u_fold < 3.0) return vec2(0.5 + s.x * abs(uv.x - 0.5), uv.y);
-  if (u_fold < 5.0) return 0.5 + s * abs(uv - 0.5);
-  vec2 asp = vec2(u_fxAspect, 1.0);
-  vec2 p = (uv - 0.5) * asp;
-  float w = 3.14159265 / 3.0;
-  float t = mod(atan(p.y, p.x) - u_foldAngle + 0.5 * w, 2.0 * w);
-  if (t > w) t = 2.0 * w - t;
-  float A = u_foldAngle - 0.5 * w + t;
-  // the radius stays as it is (no zoom: a pixel inside the source wedge
-  // maps to itself), and a fold that reaches past the frame reads it
-  // mirrored back in, so the corners show picture, not a clamp smear
-  vec2 q = vec2(cos(A), sin(A)) * length(p) / asp + 0.5;
-  return 1.0 - abs(mod(q, 2.0) - 1.0);
-}
 
 vec3 lut(float x) {
   x = clamp(x, 0.0, 1.0);
@@ -163,7 +124,6 @@ vec3 env(vec3 r, vec2 az) {
 
 void main() {
   vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
-  uv = foldUv(uv);
   vec4 L = texture(u_lum, uv);
   vec2 gp = uv * u_gridSize;
 
@@ -254,20 +214,6 @@ void main() {
     ground = 1.0 - (1.0 - base * (1.0 - u_ground.w * 0.6 * halo)) * (1.0 - glow);
   }
 
-  // paper (u_paper, 0..1): its own ground, ink and accent, cross-faded
-  // over the ink above at the end, so the host's fade is a fade (and 0 is
-  // the picture above untouched)
-  vec3 groundP = ground;
-  if (u_paper > 0.0) {
-    // warm white, a grey smoke wash where the network has mass, a little
-    // ink bleeding past each edge; over the camera the feed shows as a soft
-    // grey print under the ink
-    groundP = vec3(0.95, 0.94, 0.915) * (1.0 - 0.3 * heat) * (1.0 - 0.6 * halo);
-    if (u_bgOn > 0.5) {
-      float pl = dot(texture(u_video, vuv(uv)).rgb, vec3(0.299, 0.587, 0.114));
-      groundP *= mix(1.0, 0.35 + 0.65 * pl, u_bgLuma > 0.5 ? 0.75 : 0.9);
-    }
-  }
   // the stroke body
   vec3 ink;
   vec3 E = env(r, az);
@@ -298,15 +244,7 @@ void main() {
   float rim = smoothstep(1.0 - w1, 1.0 + w1, e1) - smoothstep(1.0 + 2.0 * w1, 1.0 + 3.5 * w1, e1);
   float lit = smoothstep(0.1, 0.4, dot(-N1, az));
   ink = mix(ink, vec3(0.93, 0.94, 0.96) * lift, clamp(rim * lit * c1 * (1.0 - c0), 0.0, 1.0) * u_thornRim);
-  vec3 inkP = ink;
-  if (u_paper > 0.0) {
-    // wet black ink: solid, with only a faint grey sheen where the chrome
-    // would have caught the light (no white rims on white paper)
-    float il = dot(ink, vec3(0.299, 0.587, 0.114));
-    inkP = vec3(0.018, 0.017, 0.022) + vec3(0.16) * smoothstep(0.35, 0.95, il);
-  }
   vec3 col = mix(ground, ink, cover);
-  vec3 colP = mix(groundP, inkP, cover);
 
   // luminous accents
   float acc = L.b;
@@ -325,15 +263,6 @@ void main() {
   }
   acc = min(acc, 1.0);
   col = 1.0 - (1.0 - col) * (1.0 - lut(acc) * acc);
-  if (u_paper > 0.0) {
-    // one accent colour on paper: the palette's hot end, saturated and
-    // laid on like a second ink (a screen blend vanishes on white)
-    vec3 ac = lut(0.8);
-    float am = dot(ac, vec3(0.333));
-    ac = clamp(am + (ac - am) * 1.8, 0.0, 1.0) * 0.85;
-    colP = mix(colP, ac, clamp(acc, 0.0, 1.0) * 0.9);
-    col = mix(col, colP, clamp(u_paper, 0.0, 1.0));
-  }
   col *= 1.0 - u_blackout;
   o = vec4(clamp(col, 0.0, 1.0), 1.0);
 }
