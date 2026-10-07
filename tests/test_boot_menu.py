@@ -211,10 +211,13 @@ def test_m_at_boot_enters_too(tmp_path):
 def test_esc_after_boot_still_returns_untouched(tmp_path):
     """Only the BOOT menu commits on Esc. Reopened mid-set, Esc is 'back'."""
     host = _booted(tmp_path)
+    t = [100.0]
+    host.scene_clock = lambda: t[0]
     host._route_key(13)                       # leave the boot menu
     host.menu.show(host.mode.id)              # reopen it — not a boot menu
     assert host.menu.open is True and host.menu.boot is False
     host.pending_mode = None
+    t[0] += 0.6          # a person's pause: the commit took the flash budget
     host._route_key(27)
     assert host.menu.open is False
     assert host.pending_mode is None          # nothing switched

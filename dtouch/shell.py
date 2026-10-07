@@ -56,14 +56,31 @@ from . import presets as _presets
 BANK_SLOTS = 9
 BANK_SEED_MAX = 7
 
-# Scene keys a held or spammed press could strobe with (look recall 1-9, the
-# setlist's [ and ], physarum's H): one change per SCENE_COOLDOWN_S by the
-# wall clock (waitKey repeats look like presses). The owner's hard floor is
-# 3 flashes a second (WCAG 2.3.1); this holds a key path to 2 changes a
-# second. Panic (0) stays free: it is the way back.
+# Flash guards. The owner's hard floor is 3 flashes a second (WCAG 2.3.1).
+# Every full-frame change shares ONE budget: one change per SCENE_COOLDOWN_S
+# by the wall clock (waitKey repeats look like presses), so two different
+# keys cannot add up past it. Commands are gated BY DEFAULT: _wire_keys wraps
+# every registered command except the short FREE_COMMANDS allowlist below,
+# so a new binding is safe unless someone argues it free here (a test holds
+# the allowlist to exactly this set). The planned backstop is a limiter on
+# the composed output frame (the agent VJ roadmap's first slice).
 SCENE_COOLDOWN_S = 0.5
-SCENE_KEY_COMMANDS = tuple(f"preset.recall.{i}" for i in range(1, BANK_SLOTS + 1)) + (
-    "preset.prev", "preset.next", "physarum.depth")
+FREE_COMMANDS = frozenset({
+    # their own rules: blackout ON is an instant safety cut, OFF takes the
+    # budget and a hold; panic is the way back, runs at once and respects
+    # the blackout hold (both stamp the budget)
+    "output.blackout", "preset.panic",
+    # slider nudges and selection move a value a step; a Cycle row nudge
+    # (a whole-picture switch) takes the budget inside nudge()
+    "param.prev", "param.next", "param.down", "param.up",
+    "param.down.big", "param.up.big",
+    # no picture change at all
+    "preset.save", "record.toggle", "audio.toggle", "debug.toggle", "app.quit",
+    # agents poured in over seconds, not a cut
+    "physarum.burst", "physarum.wave", "layer.flock",
+})
+SCENE_HINT = "one change every half second - yours lands next"
+SCENE_HINT_DROP = "one change every half second"
 
 AUTO_RELEASE_KEYS = frozenset(
     [ord(c) for c in "0123456789[],.-=_+xpdoj"]
@@ -136,7 +153,8 @@ def _register_quit(reg, ps, toasts):
 
 def _wire_perform_keys(reg, ui, hud, ps, recall, mode_commands=None,
                        safe_look=None, get_overlay=None, debug_line=None,
-                       flash_guard=None):
+                       flash_clock=None, budget=None,
+                       flash_state=None):
     """Register the perform layer (DESIGN.md §6.2) on `reg`.
 
     `recall(name)` must route a preset apply through the same path a panel click
@@ -183,12 +201,31 @@ def _wire_perform_keys(reg, ui, hud, ps, recall, mode_commands=None,
         slot = _slot_of(name)
         toasts.flash(f"{slot} - {name}" if slot else name)
 
+    # the blackout hold lives with the caller (the Host keeps it across the
+    # registry rebuild on every mode switch, so a switch cannot reopen it)
+    hold = flash_state if flash_state is not None else {}
+
+    def _held():
+        on = hold.get("blackout_on")
+        return (flash_clock is not None and on is not None
+                and flash_clock() - on < SCENE_COOLDOWN_S)
+
     def blackout():
-        # a mode may hold a blackout back (physarum over paper: a white frame
-        # cut to black is a full-frame flash, so it takes a cooldown)
-        guard = flash_guard() if flash_guard is not None else None
-        if guard is not None and not guard():
-            return
+        # ON is a safety cut to black: always, at once. OFF comes back at
+        # most once per SCENE_COOLDOWN_S after the last ON, and takes the
+        # shared budget, so a held or spammed space (or space with 0, or
+        # with any other key) gives at most 2 flashes a second (the owner's
+        # floor is 3, WCAG 2.3.1). `flash_clock` is the shell's wall clock;
+        # a caller without one (a bare registry) keeps the plain toggle.
+        if not ps.blackout:
+            if flash_clock is not None:
+                hold["blackout_on"] = flash_clock()
+        else:
+            if _held():
+                toasts.hint("blackout holds %.1f s" % SCENE_COOLDOWN_S)
+                return
+            if budget is not None and not budget():
+                return
         ps.blackout = not ps.blackout
         if ps.blackout:
             toasts.flash("BLACKOUT", AMBER)
@@ -198,7 +235,13 @@ def _wire_perform_keys(reg, ui, hud, ps, recall, mode_commands=None,
     def panic():
         # Amended DESIGN.md §6.2 '0': panic restores a known-good PICTURE —
         # the mode's safe_look, blackout disarmed, SIGNAL rack (glitch) off.
-        ps.blackout = False
+        # It is the way back, so it always runs; but a blackout inside its
+        # hold stays on (space then 0 would otherwise strobe), and the reset
+        # stamps the shared budget so the next change waits its turn.
+        if budget is not None:
+            budget(force=True)
+        if not _held():
+            ps.blackout = False
         ui.glitch = False
         name = safe_look() if safe_look is not None else ui.preset_name
         if isinstance(name, str):
@@ -307,6 +350,11 @@ def _wire_perform_keys(reg, ui, hud, ps, recall, mode_commands=None,
             _osd_show(w)
             return
         if isinstance(w, Cycle):
+            # a Cycle row switches the whole picture (matte, algorithm,
+            # palette): one change per budget, held or spammed
+            if budget is not None and not budget(defer=lambda: nudge(d, big)):
+                _osd_show(w)
+                return
             opts = list(w.options)
             setattr(ui, w.attr, (int(getattr(ui, w.attr)) + d) % len(opts))
         else:
@@ -374,15 +422,18 @@ def _wire_perform_keys(reg, ui, hud, ps, recall, mode_commands=None,
     reg.on_unknown = lambda code: toasts.hint("? for keys")
 
 
-def _perform_key(key, overlay, ps, reg, hud):
+def _perform_key(key, overlay, ps, reg, hud, budget=None):
     """One unconsumed keypress through the perform layer. Returns the overlay state.
 
     Order matters: an open help overlay eats the key (any key closes it), then
     TAB/Esc step the overlay state, then the command registry dispatches —
     unknown printable keys fall through to the gentle '? for keys' toast.
+    Closing help is a full-frame change like opening it, so it takes the
+    shared flash budget (`budget`); a refused close keeps the key eaten.
     """
     if ps.help_open:
-        ps.help_open = False
+        if budget is None or budget(defer=lambda: setattr(ps, "help_open", False)):
+            ps.help_open = False
         return overlay
     overlay, handled = _overlay_key(key, overlay, hud.toasts)
     if not handled:
@@ -645,6 +696,9 @@ class Host:
         It gets the mode-title flash a real entry gets, and the three-doors
         hint is posted HERE rather than at boot, so it lands on the mode
         instead of on top of the menu's own hint line."""
+        # a deliberate pick always lands, and the next full-frame change
+        # waits its turn behind it (the shared flash budget)
+        self.scene_ready(force=True)
         if self.auto.interrupt():
             self.hud.toasts.hint("auto off - you took over")
         if from_boot:
@@ -753,12 +807,14 @@ class Host:
                            safe_look=lambda: self.mode.safe_look(),
                            get_overlay=lambda: self.overlay,
                            debug_line=self.debug_line,
-                           flash_guard=lambda: getattr(self.mode, "flash_guard", None))
+                           flash_clock=lambda: getattr(self, "scene_clock", time.monotonic)(),
+                           budget=self.scene_ready,
+                           flash_state=self._flash_state)
         self._register_shell_commands()
-        # held or spammed scene keys: one change per SCENE_COOLDOWN_S
-        for name in SCENE_KEY_COMMANDS:
-            cmd = self.reg.get(name)
-            if cmd is not None:
+        # gated by default: every command but the allowlist takes the shared
+        # flash budget (one full-frame change per SCENE_COOLDOWN_S, any key)
+        for cmd in self.reg.commands():
+            if cmd.name not in FREE_COMMANDS:
                 cmd.run = self._scene_gated(cmd.run)
         self.help_rows = self.reg.table() + [("TAB", "Cycle overlay"),
                                              ("Esc", "Step toward hidden")]
@@ -769,7 +825,8 @@ class Host:
         eats clicks (a card commits a switch); otherwise the panel gets the
         event."""
         if self.ps.help_open:
-            if event == cv2.EVENT_LBUTTONDOWN:
+            if event == cv2.EVENT_LBUTTONDOWN and self.scene_ready(
+                    defer=lambda: setattr(self.ps, "help_open", False)):
                 self.ps.help_open = False
             return
         if self.menu.open:
@@ -799,6 +856,11 @@ class Host:
         if key == 255:
             return
         if self.menu.open:
+            # m / Esc close the menu: the same gate that opened it, so a held
+            # m cannot flicker the dimmed frame (flash guards)
+            if key in (ord("m"), ord("M"), 27) and not self.scene_ready(
+                    defer=lambda k=key: self.menu.open and self._route_key(k)):
+                return
             from_boot = self.menu.boot         # a commit closes and clears it
             action, mode_id = self.menu.key(key)
             if action == "switch":
@@ -822,24 +884,80 @@ class Host:
         if scene and self.auto.interrupt():
             self.hud.toasts.hint("auto off - you took over")
         self.overlay = _perform_key(key, self.overlay, self.ps,
-                                    self.reg, self.hud)
+                                    self.reg, self.hud, budget=self.scene_ready)
 
-    def scene_ready(self):
-        """May a scene key (a look, the setlist, H) change the scene now?
-        One change per SCENE_COOLDOWN_S by `scene_clock` (the wall clock;
-        tests set their own); True stamps it."""
+    @property
+    def _flash_state(self):
+        """The blackout hold, kept on the Host so the registry rebuilt on
+        every mode switch cannot forget a blackout that just went on."""
+        st = self.__dict__.get("_flash_state_d")
+        if st is None:
+            st = self.__dict__["_flash_state_d"] = {}
+        return st
+
+    def scene_ready(self, force=False, defer=None):
+        """May a full-frame change happen now? ONE budget for every key and
+        path (looks, H, menu, help, swap, ink, Cycle rows, panel clicks,
+        blackout OFF): one change per SCENE_COOLDOWN_S by `scene_clock`
+        (the wall clock; tests set their own). True stamps it. Inside a
+        gated command's run the grant holds, so a command that asks again
+        is not refused by its own stamp. `force` stamps without asking
+        (panic, a menu commit: they always run, and the next change waits).
+
+        A refused change is not lost: `defer` (a callable) is kept, only the
+        latest one, and `flush_deferred` runs it when the budget frees, so
+        a quick card-then-look lands half a second later instead of never."""
+        now = getattr(self, "scene_clock", time.monotonic)()
+        if force:
+            self._scene_key_t = now
+            self._deferred = None        # a reset or a pick wins over a queued change
+            return True
+        if getattr(self, "_scene_grant", False):
+            return True
+        last = getattr(self, "_scene_key_t", None)
+        if last is not None and now - last < SCENE_COOLDOWN_S:
+            if defer is not None:
+                self._deferred = defer
+                self.hud.toasts.hint(SCENE_HINT)
+            else:
+                self.hud.toasts.hint(SCENE_HINT_DROP)
+            return False
+        self._scene_key_t = now
+        self._deferred = None
+        return True
+
+    def flush_deferred(self):
+        """Run the latest refused change once the budget frees (one per
+        frame, called from the loop). It stamps the budget like any change,
+        so the rate stays at one per SCENE_COOLDOWN_S."""
+        run = getattr(self, "_deferred", None)
+        if run is None:
+            return False
         now = getattr(self, "scene_clock", time.monotonic)()
         last = getattr(self, "_scene_key_t", None)
         if last is not None and now - last < SCENE_COOLDOWN_S:
-            self.hud.toasts.hint("one scene change every %.1f s" % SCENE_COOLDOWN_S)
             return False
+        self._deferred = None
         self._scene_key_t = now
+        self._scene_grant = True
+        try:
+            run()
+        finally:
+            self._scene_grant = False
         return True
 
     def _scene_gated(self, run):
-        def gated():
-            if self.scene_ready():
+        def granted():
+            self._scene_grant = True
+            try:
                 run()
+            finally:
+                self._scene_grant = False
+
+        def gated():
+            if self.scene_ready(defer=run):
+                granted()
+        gated._scene_gated = True
         return gated
 
     def _toggle_auto(self):
@@ -1556,6 +1674,9 @@ class Host:
                                  matte=getattr(mode, "matte_kind", mattes[0]),
                                  palette=boot_palette)
         ui.accent = mode.accent
+        # panel clicks that switch the whole picture take the shared flash
+        # budget too (overlay_ui._activate)
+        ui.scene_budget = self.scene_ready
         ui.panel_title = "lighteater - " + mode.title.upper()
         ui.set_spec(self.compose_spec(mode))
         ui.mirror = self.mirror
@@ -1706,6 +1827,7 @@ class Host:
                                     black_streak + 1
                                     if float(frame[::16, ::16].mean()) < 3.0 else 0)
 
+                    self.flush_deferred()      # a held-back change lands now
                     self._pump_preset_mailboxes()
                     self._sync_host_state()
 
