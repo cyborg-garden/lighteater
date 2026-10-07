@@ -329,6 +329,10 @@ class PhysarumMode:
                           video_bg=True, ink_paper=True, ink_fold=4),
     }
 
+    # the autopilot never re-casts onto an ink look: paper turns the whole
+    # frame white, a gesture the performer makes (the browser's AUTO_LOOKS)
+    AUTO_SKIP = INK_LOOKS
+
     # apply="reset" merges a look over these; matte / video_bg / video_mix are
     # deliberately absent (keep semantics — rig switches survive look hops).
     DEFAULTS = dict(point_bg="veins", point_fg="fingers", palette="arctic",

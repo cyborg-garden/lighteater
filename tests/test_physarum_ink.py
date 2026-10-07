@@ -292,6 +292,9 @@ def test_the_governor_steps_the_ink_then_the_step_down(tmp_path):
     if m.engine != "gl":
         pytest.skip("no GL context available (CI)")
     try:
+        # a fresh run: the boot frames were real frames, and on a loaded
+        # machine they could already count as slow (seen at load 14-16)
+        m._gov_level, m._gov_slow = 0, 0
         for _ in range(GOV_SLOW_N - 1):
             m._govern(GOV_BUDGET_MS + 5, True)
         m._govern(GOV_BUDGET_MS - 5, True)          # one fast frame resets the run

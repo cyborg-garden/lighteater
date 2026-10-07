@@ -818,7 +818,10 @@ class Host:
         """
         if not self.auto.on or self.mode is None or self.ui is None:
             return
-        looks = list(self.all_presets.keys())
+        # a mode may keep looks out of the autopilot's pool (physarum's ink
+        # looks: paper turns the whole frame white, the performer's call)
+        skip = getattr(self.mode, "AUTO_SKIP", ())
+        looks = [n for n in self.all_presets.keys() if n not in skip]
         modes = [m.id for m in REGISTRY]
         current = self.ui.preset_name if self.ui.preset_idx < len(
             self.ui.presets) else None

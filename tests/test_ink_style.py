@@ -280,3 +280,23 @@ def test_the_fold_follows_the_performer_in_the_running_mode(tmp_path):
         assert m.pf.ink_style["fold"] == 2 and m.pf.ink_style["side"][0] == 1.0
     finally:
         m.really_stop()
+
+
+def test_the_autopilot_never_recasts_onto_an_ink_look(tmp_path):
+    """Paper turns the whole frame white: a gesture the performer makes, not
+    one the autopilot springs on a room (the browser's AUTO_LOOKS)."""
+    host, _ = _booted(tmp_path)
+    m = host.mode
+    try:
+        assert PhysarumMode.AUTO_SKIP == INK_LOOKS
+        host.auto.on = True
+        posted = []
+        for _ in range(4000):
+            host.ui.pending_preset = None
+            host._auto_tick(0.5)
+            if host.ui.pending_preset:
+                posted.append(host.ui.pending_preset)
+        assert len(set(posted)) >= 3, posted[:10]      # it really re-cast
+        assert "inkblot" not in posted
+    finally:
+        m.really_stop()
